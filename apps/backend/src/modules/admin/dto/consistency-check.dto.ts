@@ -1,4 +1,4 @@
-import { IsArray, IsNumber, IsOptional, Min, validateSync } from 'class-validator';
+import { IsArray, IsNumber, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class ConsistencyCheckByIdsDto {

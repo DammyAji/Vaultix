@@ -1,4 +1,8 @@
-import { registerDecorator, ValidationOptions, ValidationArguments } from 'class-validator';
+import {
+  registerDecorator,
+  ValidationOptions,
+  ValidationArguments,
+} from 'class-validator';
 
 /**
  * Custom validator for Stellar public key addresses
@@ -6,14 +10,14 @@ import { registerDecorator, ValidationOptions, ValidationArguments } from 'class
  * Format: G[A-Z0-9]{55}
  */
 export function IsStellarAddress(validationOptions?: ValidationOptions) {
-  return function (object: Object, propertyName: string) {
+  return function (object: object, propertyName: string) {
     registerDecorator({
       name: 'isStellarAddress',
       target: object.constructor,
       propertyName: propertyName,
       options: validationOptions,
       validator: {
-        validate(value: any) {
+        validate(value: unknown) {
           if (typeof value !== 'string') {
             return false;
           }
