@@ -53,4 +53,25 @@ describe('UpdateProfileDto', () => {
     const errors = await validate(dto);
     expect(errors.length).toBeGreaterThan(0);
   });
+
+  it('should reject empty bio when provided', async () => {
+    const dto = new UpdateProfileDto();
+    dto.bio = '';
+    const errors = await validate(dto);
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('should reject empty preferredAsset when provided', async () => {
+    const dto = new UpdateProfileDto();
+    dto.preferredAsset = '';
+    const errors = await validate(dto);
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('should reject preferredAsset exceeding max length', async () => {
+    const dto = new UpdateProfileDto();
+    dto.preferredAsset = 'A'.repeat(13);
+    const errors = await validate(dto);
+    expect(errors.length).toBeGreaterThan(0);
+  });
 });

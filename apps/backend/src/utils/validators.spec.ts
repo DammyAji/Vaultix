@@ -9,7 +9,7 @@ class TestDto {
 describe('IsStellarAddress', () => {
   it('should validate a valid Stellar public key', async () => {
     const dto = new TestDto();
-    dto.address = 'GABCD1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJ'; // 56 chars starting with G
+    dto.address = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'; // 56 chars starting with G
     const errors = await validate(dto);
     expect(errors).toHaveLength(0);
   });
@@ -55,7 +55,7 @@ describe('IsStellarAddress', () => {
 
   it('should accept a real Stellar public key format', async () => {
     const dto = new TestDto();
-    dto.address = 'GD5JDQXKEVPR7QD2R7LXKXN7M4ZGAPYI7F7DQ7K7D7D7D7D7D7D7D';
+    dto.address = 'GD5JDQXKEVPR7QD2R7LXKXN7M4ZGAPYI7F7DQ7K7D7D7D7D7D7D7DAAA';
     const errors = await validate(dto);
     expect(errors).toHaveLength(0);
   });

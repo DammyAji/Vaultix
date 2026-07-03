@@ -14,7 +14,7 @@ describe('Asset DTOs', () => {
     it('should validate with optional issuer', async () => {
       const dto = new CreateAssetDto();
       dto.code = 'USD';
-      dto.issuer = 'GD5JDQXKEVPR7QD2R7LXKXN7M4ZGAPYI7F7DQ7K7D7D7D7D7D7D7D';
+      dto.issuer = 'GD5JDQXKEVPR7QD2R7LXKXN7M4ZGAPYI7F7DQ7K7D7D7D7D7D7D7DABC';
       dto.displayName = 'US Dollar';
       const errors = await validate(dto);
       expect(errors).toHaveLength(0);
@@ -54,7 +54,25 @@ describe('Asset DTOs', () => {
     it('should reject displayName exceeding max length', async () => {
       const dto = new CreateAssetDto();
       dto.code = 'XLM';
-      dto.displayName = 'A'.repeat(101);
+      dto.displayName = 'A'.repeat(256);
+      const errors = await validate(dto);
+      expect(errors.length).toBeGreaterThan(0);
+    });
+
+    it('should reject iconUrl exceeding max length', async () => {
+      const dto = new CreateAssetDto();
+      dto.code = 'XLM';
+      dto.displayName = 'Test';
+      dto.iconUrl = 'A'.repeat(501);
+      const errors = await validate(dto);
+      expect(errors.length).toBeGreaterThan(0);
+    });
+
+    it('should reject empty iconUrl when provided', async () => {
+      const dto = new CreateAssetDto();
+      dto.code = 'XLM';
+      dto.displayName = 'Test';
+      dto.iconUrl = '';
       const errors = await validate(dto);
       expect(errors.length).toBeGreaterThan(0);
     });
@@ -93,6 +111,41 @@ describe('Asset DTOs', () => {
     it('should reject code exceeding max length', async () => {
       const dto = new UpdateAssetDto();
       dto.code = 'A'.repeat(13);
+      const errors = await validate(dto);
+      expect(errors.length).toBeGreaterThan(0);
+    });
+
+    it('should reject empty code when provided', async () => {
+      const dto = new UpdateAssetDto();
+      dto.code = '';
+      const errors = await validate(dto);
+      expect(errors.length).toBeGreaterThan(0);
+    });
+
+    it('should reject empty displayName when provided', async () => {
+      const dto = new UpdateAssetDto();
+      dto.displayName = '';
+      const errors = await validate(dto);
+      expect(errors.length).toBeGreaterThan(0);
+    });
+
+    it('should reject displayName exceeding max length', async () => {
+      const dto = new UpdateAssetDto();
+      dto.displayName = 'A'.repeat(256);
+      const errors = await validate(dto);
+      expect(errors.length).toBeGreaterThan(0);
+    });
+
+    it('should reject empty iconUrl when provided', async () => {
+      const dto = new UpdateAssetDto();
+      dto.iconUrl = '';
+      const errors = await validate(dto);
+      expect(errors.length).toBeGreaterThan(0);
+    });
+
+    it('should reject iconUrl exceeding max length', async () => {
+      const dto = new UpdateAssetDto();
+      dto.iconUrl = 'A'.repeat(501);
       const errors = await validate(dto);
       expect(errors.length).toBeGreaterThan(0);
     });

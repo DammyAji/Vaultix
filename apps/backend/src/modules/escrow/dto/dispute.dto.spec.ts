@@ -53,7 +53,7 @@ describe('Dispute DTOs', () => {
   describe('ResolveDisputeDto', () => {
     it('should validate with outcome and notes', async () => {
       const dto = new ResolveDisputeDto();
-      dto.outcome = DisputeOutcome.BUYER_REFUND;
+      dto.outcome = DisputeOutcome.REFUNDED_TO_BUYER;
       dto.resolutionNotes = 'Refund approved due to damaged goods';
       const errors = await validate(dto);
       expect(errors).toHaveLength(0);
@@ -71,7 +71,7 @@ describe('Dispute DTOs', () => {
 
     it('should reject empty resolution notes', async () => {
       const dto = new ResolveDisputeDto();
-      dto.outcome = DisputeOutcome.BUYER_REFUND;
+      dto.outcome = DisputeOutcome.REFUNDED_TO_BUYER;
       dto.resolutionNotes = '';
       const errors = await validate(dto);
       expect(errors.length).toBeGreaterThan(0);

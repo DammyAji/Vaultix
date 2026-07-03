@@ -1,4 +1,5 @@
 import { validate } from 'class-validator';
+import { plainToInstance } from 'class-transformer';
 import {
   CreateEscrowDto,
   EscrowAssetDto,
@@ -21,7 +22,7 @@ describe('CreateEscrowDto', () => {
     it('should validate custom asset with issuer', async () => {
       const dto = new EscrowAssetDto();
       dto.code = 'USD';
-      dto.issuer = 'GD5JDQXKEVPR7QD2R7LXKXN7M4ZGAPYI7F7DQ7K7D7D7D7D7D7D7D';
+      dto.issuer = 'GD5JDQXKEVPR7QD2R7LXKXN7M4ZGAPYI7F7DQ7K7D7D7D7D7D7D7DABC';
       const errors = await validate(dto);
       expect(errors).toHaveLength(0);
     });
@@ -107,89 +108,139 @@ describe('CreateEscrowDto', () => {
 
   describe('CreateEscrowDto', () => {
     it('should validate with minimal required fields', async () => {
-      const dto = new CreateEscrowDto();
-      dto.title = 'Test Escrow';
-      dto.amount = 100;
-      dto.parties = [
+      const dto = plainToInstance(
+        CreateEscrowDto,
         {
-          userId: '123e4567-e89b-12d3-a456-426614174000',
-          role: PartyRole.BUYER,
+          title: 'Test Escrow',
+          amount: 100,
+          parties: [
+            {
+              userId: '123e4567-e89b-12d3-a456-426614174000',
+              role: PartyRole.BUYER,
+            },
+          ],
         },
-      ];
+        { enableImplicitConversion: true },
+      );
       const errors = await validate(dto);
       expect(errors).toHaveLength(0);
     });
 
     it('should validate with all fields', async () => {
-      const dto = new CreateEscrowDto();
-      dto.title = 'Test Escrow';
-      dto.description = 'Test description';
-      dto.amount = 100;
-      dto.asset = { code: 'XLM' };
-      dto.type = EscrowType.MILESTONE;
-      dto.parties = [
+      const dto = plainToInstance(
+        CreateEscrowDto,
         {
-          userId: '123e4567-e89b-12d3-a456-426614174000',
-          role: PartyRole.BUYER,
+          title: 'Test Escrow',
+          description: 'Test description',
+          amount: 100,
+          asset: { code: 'XLM', issuer: '' },
+          type: EscrowType.MILESTONE,
+          parties: [
+            {
+              userId: '123e4567-e89b-12d3-a456-426614174000',
+              role: PartyRole.BUYER,
+            },
+          ],
+          conditions: [
+            {
+              description: 'Condition 1',
+              type: ConditionType.MANUAL,
+            },
+          ],
+          expiresAt: '2026-12-31T23:59:59.999Z',
         },
-      ];
-      dto.conditions = [
-        {
-          description: 'Condition 1',
-          type: ConditionType.MANUAL,
-        },
-      ];
-      dto.expiresAt = '2026-12-31T23:59:59.999Z';
+        { enableImplicitConversion: true },
+      );
       const errors = await validate(dto);
       expect(errors).toHaveLength(0);
     });
 
     it('should reject missing title', async () => {
-      const dto = new CreateEscrowDto();
-      dto.amount = 100;
-      dto.parties = [
+      const dto = plainToInstance(
+        CreateEscrowDto,
         {
-          userId: '123e4567-e89b-12d3-a456-426614174000',
-          role: PartyRole.BUYER,
+          amount: 100,
+          parties: [
+            {
+              userId: '123e4567-e89b-12d3-a456-426614174000',
+              role: PartyRole.BUYER,
+            },
+          ],
         },
-      ];
+        { enableImplicitConversion: true },
+      );
       const errors = await validate(dto);
       expect(errors.length).toBeGreaterThan(0);
     });
 
     it('should reject negative amount', async () => {
-      const dto = new CreateEscrowDto();
-      dto.title = 'Test';
-      dto.amount = -100;
-      dto.parties = [
+      const dto = plainToInstance(
+        CreateEscrowDto,
         {
-          userId: '123e4567-e89b-12d3-a456-426614174000',
-          role: PartyRole.BUYER,
+          title: 'Test',
+          amount: -100,
+          parties: [
+            {
+              userId: '123e4567-e89b-12d3-a456-426614174000',
+              role: PartyRole.BUYER,
+            },
+          ],
         },
-      ];
+        { enableImplicitConversion: true },
+      );
       const errors = await validate(dto);
       expect(errors.length).toBeGreaterThan(0);
     });
 
     it('should reject empty parties array', async () => {
-      const dto = new CreateEscrowDto();
-      dto.title = 'Test';
-      dto.amount = 100;
-      dto.parties = [];
+      const dto = plainToInstance(
+        CreateEscrowDto,
+        {
+          title: 'Test',
+          amount: 100,
+          parties: [],
+        },
+        { enableImplicitConversion: true },
+      );
       const errors = await validate(dto);
       expect(errors.length).toBeGreaterThan(0);
     });
 
     it('should reject title exceeding max length', async () => {
-      const dto = new CreateEscrowDto();
-      dto.title = 'A'.repeat(256);
-      dto.amount = 100;
-      dto.parties = [
+      const dto = plainToInstance(
+        CreateEscrowDto,
         {
-          userId: '123e4567-e89b-12d3-a456-426614174000',
-          role: PartyRole.BUYER,
+          title: 'A'.repeat(256),
+          amount: 100,
+          parties: [
+            {
+              userId: '123e4567-e89b-12d3-a456-426614174000',
+              role: PartyRole.BUYER,
+            },
+          ],
         },
-      ];
+        { enableImplicitConversion: true },
+      );
+      const errors = await validate(dto);
+      expect(errors.length).toBeGreaterThan(0);
+    });
+
+    it('should reject metadataHash exceeding max length', async () => {
+      const dto = plainToInstance(
+        CreateEscrowDto,
+        {
+          title: 'Test',
+          amount: 100,
+          metadataHash: 'A'.repeat(65),
+          parties: [
+            {
+              userId: '123e4567-e89b-12d3-a456-426614174000',
+              role: PartyRole.BUYER,
+            },
+          ],
+        },
+        { enableImplicitConversion: true },
+      );
       const errors = await validate(dto);
       expect(errors.length).toBeGreaterThan(0);
     });
