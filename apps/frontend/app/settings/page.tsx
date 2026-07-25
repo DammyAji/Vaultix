@@ -2,10 +2,11 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
-import { User, Copy, Check, Bell, Shield, Settings as SettingsIcon, ArrowRight, Loader2 } from "lucide-react";
+import { User, Copy, Check, Bell, Shield, Settings as SettingsIcon, ArrowRight, Loader2, DollarSign } from "lucide-react";
 import { useWallet } from "@/app/contexts/WalletContext";
 import ApiKeyManager from "@/components/settings/ApiKeyManager";
 import { useNotifications, UserPreferences } from "@/hooks/useNotifications";
+import { useCurrency } from "@/context/CurrencyContext";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -338,6 +339,59 @@ function ApiKeysSection() {
   return <ApiKeyManager />;
 }
 
+// ── Currency Preferences Section ───────────────────────────────────────────
+
+function CurrencyPreferencesSection() {
+  const { currency, setCurrency, showFiat, setShowFiat } = useCurrency();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (!mounted) {
+    return (
+      <SectionCard title="Currency Display" icon={DollarSign}>
+        <div className="text-sm text-gray-400 italic">Loading…</div>
+      </SectionCard>
+    );
+  }
+
+  return (
+    <SectionCard title="Currency Display" icon={DollarSign}>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+          <div>
+            <span className="text-sm font-medium text-gray-700 block">Show Fiat Equivalent</span>
+            <span className="text-xs text-gray-400">Display fiat equivalents alongside XLM amounts</span>
+          </div>
+          <Toggle checked={showFiat} onChange={() => setShowFiat(!showFiat)} />
+        </div>
+        
+        <div className="flex items-center justify-between pt-1">
+          <div>
+            <span className="text-sm font-medium text-gray-700 block">Preferred Currency</span>
+            <span className="text-xs text-gray-400">Choose your local currency for conversion</span>
+          </div>
+          <select
+            value={currency}
+            onChange={(e) => setCurrency(e.target.value as any)}
+            className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 uppercase"
+            disabled={!showFiat}
+          >
+            <option value="usd">USD</option>
+            <option value="eur">EUR</option>
+            <option value="ngn">NGN</option>
+            <option value="kes">KES</option>
+            <option value="ghs">GHS</option>
+            <option value="zar">ZAR</option>
+          </select>
+        </div>
+      </div>
+    </SectionCard>
+  );
+}
+
 // ── Templates Link Section ─────────────────────────────────────────────────
 
 function TemplatesLinkSection() {
@@ -374,6 +428,7 @@ export default function SettingsPage() {
 
         <ProfileSection />
         <TemplatesLinkSection />
+        <CurrencyPreferencesSection />
         <NotificationPrefsSection />
         <ApiKeysSection />
       </div>
