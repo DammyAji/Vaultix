@@ -5,6 +5,7 @@ import {
   ForbiddenException,
   ConflictException,
   UnprocessableEntityException,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, Repository, SelectQueryBuilder } from 'typeorm';
@@ -47,6 +48,8 @@ import { NotificationEventType } from '../../../notifications/enums/notification
 
 @Injectable()
 export class EscrowService {
+  private readonly logger = new Logger(EscrowService.name);
+
   constructor(
     @InjectRepository(Escrow)
     private escrowRepository: Repository<Escrow>,
@@ -143,6 +146,13 @@ export class EscrowService {
       // Dispatch webhook for escrow.created
       await this.webhookService.dispatchEvent('escrow.created', {
         escrowId: savedEscrow.id,
+      });
+
+      this.logger.log({
+        msg: 'Escrow created successfully',
+        userId: creatorId,
+        escrowId: savedEscrow.id,
+        escrowType: dto.type,
       });
 
       return await this.findOne(savedEscrow.id);
@@ -538,6 +548,13 @@ export class EscrowService {
       );
 
     const fundedAt = new Date();
+
+    this.logger.log({
+      msg: 'Escrow funded successfully',
+      userId,
+      escrowId: id,
+      amount: dto.amount,
+    });
     await this.escrowRepository.update(id, {
       stellarTxHash,
       fundedAt,
@@ -727,6 +744,13 @@ export class EscrowService {
       escrowId,
       conditionId,
       fulfilledBy: userId,
+    });
+
+    this.logger.log({
+      msg: 'Escrow condition fulfilled',
+      userId,
+      escrowId,
+      conditionId,
     });
 
     return condition;
@@ -974,6 +998,13 @@ export class EscrowService {
     );
 
     await this.webhookService.dispatchEvent('escrow.disputed', {
+      escrowId,
+      disputeId: savedDispute.id,
+    });
+
+    this.logger.log({
+      msg: 'Dispute filed successfully',
+      userId,
       escrowId,
       disputeId: savedDispute.id,
     });
