@@ -342,6 +342,13 @@ export class EscrowService {
       );
     }
 
+    if (query.walletAddress) {
+      qb.andWhere(
+        '(escrow.creatorId = :walletAddress OR party.userId = :walletAddress)',
+        { walletAddress: query.walletAddress },
+      );
+    }
+
     const sortOrder = query.sortOrder === SortOrder.ASC ? 'ASC' : 'DESC';
     qb.orderBy(`escrow.${query.sortBy || 'createdAt'}`, sortOrder);
 
