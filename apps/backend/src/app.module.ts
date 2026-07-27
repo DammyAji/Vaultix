@@ -3,6 +3,8 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ScheduleModule } from '@nestjs/schedule';
 import { JwtModule } from '@nestjs/jwt';
+import { LoggerModule } from 'nestjs-pino';
+import * as crypto from 'crypto';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './modules/auth/auth.module';
@@ -39,6 +41,29 @@ import ipfsConfig from './config/ipfs.config';
 
 @Module({
   imports: [
+    LoggerModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        return {
+          pinoHttp: {
+            level: config.get('LOG_LEVEL', 'info'),
+            genReqId: (req) => {
+              return req.headers['x-request-id'] || crypto.randomUUID();
+            },
+            transport:
+              config.get('NODE_ENV') !== 'production'
+                ? {
+                    target: 'pino-pretty',
+                    options: {
+                      singleLine: true,
+                    },
+                  }
+                : undefined,
+          },
+        };
+      },
+    }),
     ConfigModule.forRoot({
       isGlobal: true,
       load: [stellarConfig, ipfsConfig],
