@@ -28,6 +28,7 @@ import { ApiKey } from './api-key/entities/api-key.entity';
 import { AdminAuditLog } from './modules/admin/entities/admin-audit-log.entity';
 import { Webhook } from './modules/webhook/webhook.entity';
 import { WebhookDelivery } from './modules/webhook/entities/webhook-delivery.entity';
+import { WebhookDeadLetter } from './modules/webhook/entities/webhook-dead-letter.entity';
 import { StellarEvent } from './modules/stellar/entities/stellar-event.entity';
 import { AdminModule } from './modules/admin/admin.module';
 import { StellarEventModule } from './modules/stellar/stellar-event.module';
@@ -36,8 +37,12 @@ import { AllowedAsset } from './modules/assets/entities/allowed-asset.entity';
 import { IpfsModule } from './modules/ipfs/ipfs.module';
 import { HealthModule } from './modules/health/health.module';
 import { AppVersionModule } from './app-version/app-version.module';
+import { EmailModule } from './email/email.module';
+import { EmailOutbox } from './email/entities/email-outbox.entity';
 import stellarConfig from './config/stellar.config';
 import ipfsConfig from './config/ipfs.config';
+import emailConfig from './config/email.config';
+import webhookConfig from './config/webhook.config';
 
 @Module({
   imports: [
@@ -66,7 +71,7 @@ import ipfsConfig from './config/ipfs.config';
     }),
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [stellarConfig, ipfsConfig],
+      load: [stellarConfig, ipfsConfig, emailConfig, webhookConfig],
     }),
     ScheduleModule.forRoot(),
     TypeOrmModule.forRootAsync({
@@ -92,8 +97,10 @@ import ipfsConfig from './config/ipfs.config';
           AdminAuditLog,
           Webhook,
           WebhookDelivery,
+          WebhookDeadLetter,
           StellarEvent,
           AllowedAsset,
+          EmailOutbox,
         ],
         synchronize: false,
         migrations: [__dirname + '/migrations/*.ts'],
@@ -114,6 +121,7 @@ import ipfsConfig from './config/ipfs.config';
     IpfsModule,
     HealthModule,
     AppVersionModule,
+    EmailModule,
     JwtModule.registerAsync({
       useFactory: (configService: ConfigService) => ({
         secret:
