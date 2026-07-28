@@ -12,6 +12,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { EmailVerification } from '../user/entities/email-verification.entity';
 import { NotificationsModule } from '../../notifications/notifications.module';
 
+import { validateJwtSecret } from './services/jwt-validation.util';
+
 @Module({
   imports: [
     UserModule,
@@ -21,8 +23,7 @@ import { NotificationsModule } from '../../notifications/notifications.module';
     TypeOrmModule.forFeature([EmailVerification]),
     JwtModule.registerAsync({
       useFactory: () => ({
-        secret:
-          process.env.JWT_SECRET || 'your-secret-key-change-in-production',
+        secret: validateJwtSecret(process.env.JWT_SECRET),
       }),
     }),
     ThrottlerModule.forRoot([

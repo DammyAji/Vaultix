@@ -1,5 +1,6 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { validateJwtSecret } from './modules/auth/services/jwt-validation.util';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ScheduleModule } from '@nestjs/schedule';
 import { JwtModule } from '@nestjs/jwt';
@@ -124,9 +125,7 @@ import webhookConfig from './config/webhook.config';
     EmailModule,
     JwtModule.registerAsync({
       useFactory: (configService: ConfigService) => ({
-        secret:
-          configService.get<string>('JWT_SECRET') ||
-          'your-secret-key-change-in-production',
+        secret: validateJwtSecret(configService.get<string>('JWT_SECRET')),
         signOptions: { expiresIn: '15m' },
       }),
       inject: [ConfigService],
