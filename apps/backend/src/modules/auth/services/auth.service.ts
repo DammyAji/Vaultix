@@ -18,6 +18,7 @@ import { UpdateProfileDto } from '../dto/profile.dto';
 import { IpfsService } from '../../ipfs/ipfs.service';
 import { EmailService } from '../../../email/email.service';
 import { PreferenceService } from '../../../notifications/preference.service';
+import { validateJwtSecret } from './jwt-validation.util';
 
 // Stellar SDK types for signature verification
 interface StellarKeypair {
@@ -285,8 +286,11 @@ export class AuthService {
     token: string,
   ): Promise<{ userId: string; walletAddress: string }> {
     try {
+      const secret = validateJwtSecret(
+        this.configService.get<string>('JWT_SECRET'),
+      );
       const payload = (await this.jwtService.verifyAsync(token, {
-        secret: this.configService.get<string>('JWT_SECRET'),
+        secret,
       })) as unknown as { sub: string; walletAddress: string; type: string };
 
       if (payload.type !== 'access') {
