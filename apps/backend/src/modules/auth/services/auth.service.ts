@@ -5,6 +5,7 @@ import {
   Logger,
   UnauthorizedException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -52,6 +53,7 @@ export class AuthService {
   async generateChallenge(
     walletAddress: string,
   ): Promise<{ nonce: string; message: string }> {
+    this.logger.log({ msg: 'Generating challenge', walletAddress });
     const nonce = crypto.randomBytes(16).toString('hex');
     const message = `Sign this message to authenticate with Vaultix: ${nonce}`;
 
@@ -84,6 +86,7 @@ export class AuthService {
     signature: string,
     publicKey: string,
   ): Promise<{ accessToken: string; refreshToken: string }> {
+    this.logger.log({ msg: 'Verifying signature', publicKey });
     // Derive walletAddress from publicKey (trusted source after signature verification)
     const walletAddress = publicKey;
 
@@ -114,6 +117,11 @@ export class AuthService {
 
     const accessToken = this.generateAccessToken(user.id, walletAddress);
     const refreshToken = await this.generateRefreshToken(user.id);
+
+    this.logger.log({
+      msg: 'User authenticated successfully',
+      userId: user.id,
+    });
 
     return { accessToken, refreshToken };
   }
