@@ -971,6 +971,18 @@ export class EscrowService {
       disputeId: savedDispute.id,
     });
 
+    // Notify the other escrow participants (fire-and-forget)
+    await this.notifyDisputeParticipants(
+      escrow,
+      NotificationEventType.DISPUTE_RAISED,
+      {
+        escrowId,
+        escrowTitle: escrow.title,
+        disputeId: savedDispute.id,
+      },
+      userId,
+    );
+
     return this.disputeRepository.findOne({
       where: { id: savedDispute.id },
       relations: ['filedBy'],
@@ -1072,10 +1084,54 @@ export class EscrowService {
       outcome: dto.outcome,
     });
 
+    // Notify the other escrow participants (fire-and-forget)
+    await this.notifyDisputeParticipants(
+      escrow,
+      NotificationEventType.DISPUTE_RESOLVED,
+      {
+        escrowId,
+        escrowTitle: escrow.title,
+        disputeId: resolved.id,
+        outcome: dto.outcome,
+      },
+      arbitratorUserId,
+    );
+
     return this.disputeRepository.findOne({
       where: { id: resolved.id },
       relations: ['filedBy', 'resolvedBy'],
     }) as Promise<Dispute>;
+  }
+
+  /**
+   * Dispatch a dispute notification to every escrow participant
+   * (creator + parties), excluding the acting user. Failures must not
+   * block the dispute workflow.
+   */
+  private async notifyDisputeParticipants(
+    escrow: Escrow,
+    eventType: NotificationEventType,
+    payload: Record<string, unknown>,
+    excludeUserId?: string,
+  ): Promise<void> {
+    const recipientIds = new Set<string>();
+    if (escrow.creatorId) recipientIds.add(escrow.creatorId);
+    for (const party of escrow.parties ?? []) {
+      if (party.userId) recipientIds.add(party.userId);
+    }
+    if (excludeUserId) recipientIds.delete(excludeUserId);
+
+    for (const recipientId of recipientIds) {
+      const recipient = await this.userRepository.findOne({
+        where: { id: recipientId },
+      });
+      this.notificationService
+        .handleEscrowEvent(recipientId, eventType, {
+          ...payload,
+          email: recipient?.email ?? undefined,
+        })
+        .catch(() => undefined);
+    }
   }
 
   async proposeMilestoneChange(

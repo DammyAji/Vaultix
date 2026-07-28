@@ -1,5 +1,8 @@
 import {
   Injectable,
+  Inject,
+  forwardRef,
+  Logger,
   UnauthorizedException,
   BadRequestException,
 } from '@nestjs/common';
@@ -13,6 +16,8 @@ import { UserService } from '../../user/user.service';
 import { EmailVerification } from '../../user/entities/email-verification.entity';
 import { UpdateProfileDto } from '../dto/profile.dto';
 import { IpfsService } from '../../ipfs/ipfs.service';
+import { EmailService } from '../../../email/email.service';
+import { PreferenceService } from '../../../notifications/preference.service';
 
 // Stellar SDK types for signature verification
 interface StellarKeypair {
@@ -30,6 +35,8 @@ const StellarSdk: StellarSdkModule = require('stellar-sdk') as StellarSdkModule;
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private userService: UserService,
     private jwtService: JwtService,
@@ -37,6 +44,9 @@ export class AuthService {
     @InjectRepository(EmailVerification)
     private emailVerificationRepository: Repository<EmailVerification>,
     private ipfsService: IpfsService,
+    private emailService: EmailService,
+    @Inject(forwardRef(() => PreferenceService))
+    private preferenceService: PreferenceService,
   ) {}
 
   async generateChallenge(
@@ -52,6 +62,17 @@ export class AuthService {
         walletAddress,
         nonce,
       });
+
+      // Seed default notification preferences for the new user. Failures
+      // are logged but must not block the signup / challenge flow.
+      try {
+        await this.preferenceService.seedDefaultPreferences(user.id);
+      } catch (error) {
+        this.logger.error(
+          `Failed to seed default notification preferences for user ${user.id}`,
+          error instanceof Error ? error.stack : String(error),
+        );
+      }
     } else {
       user = await this.userService.update(user.id, { nonce });
     }
@@ -141,11 +162,25 @@ export class AuthService {
     }
 
     // If email is being updated, reset emailVerified
-    if (updateProfileDto.email && updateProfileDto.email !== user.email) {
+    const emailChanged =
+      Boolean(updateProfileDto.email) && updateProfileDto.email !== user.email;
+    if (emailChanged) {
       updateProfileDto.emailVerified = false;
     }
 
-    return this.userService.update(userId, updateProfileDto);
+    const updated = await this.userService.update(userId, updateProfileDto);
+
+    // Automatically send a verification email whenever a new address is set
+    if (emailChanged) {
+      this.sendEmailVerification(userId).catch((error: unknown) => {
+        this.logger.error(
+          `Failed to queue verification email for user ${userId}`,
+          error instanceof Error ? error.stack : String(error),
+        );
+      });
+    }
+
+    return updated;
   }
 
   async uploadAvatar(
@@ -188,8 +223,40 @@ export class AuthService {
     });
     await this.emailVerificationRepository.save(emailVerification);
 
-    // TODO: Actually send email (for now, just log it
-    console.log(`Email verification token for ${user.email}: ${token}`);
+    // Queue the verification email for async delivery (retried on failure)
+    const verificationUrl = this.buildVerificationUrl(token);
+    await this.emailService.sendEmail(
+      user.email,
+      'Verify your email address - Vaultix',
+      this.buildVerificationEmailHtml(user, verificationUrl),
+      `Hi${user.displayName ? ` ${user.displayName}` : ''},\n\n` +
+        `Please verify your email address by opening the link below:\n\n` +
+        `${verificationUrl}\n\n` +
+        `This link expires in 24 hours. If you did not request this, you can ignore this email.`,
+    );
+    this.logger.log(`Verification email queued for user ${userId}`);
+  }
+
+  private buildVerificationUrl(token: string): string {
+    const baseUrl = this.configService.get<string>(
+      'email.verificationBaseUrl',
+      'http://localhost:3000/auth/profile/verify-email',
+    );
+    return `${baseUrl}?token=${encodeURIComponent(token)}`;
+  }
+
+  private buildVerificationEmailHtml(
+    user: User,
+    verificationUrl: string,
+  ): string {
+    const greeting = user.displayName ? `Hi ${user.displayName},` : 'Hi,';
+    return (
+      `<p>${greeting}</p>` +
+      `<p>Please verify your email address to finish setting up your Vaultix account.</p>` +
+      `<p><a href="${verificationUrl}">Verify email address</a></p>` +
+      `<p>Or copy and paste this link into your browser:<br/>${verificationUrl}</p>` +
+      `<p><small>This link expires in 24 hours. If you did not request this, you can ignore this email.</small></p>`
+    );
   }
 
   async verifyEmail(token: string): Promise<void> {
