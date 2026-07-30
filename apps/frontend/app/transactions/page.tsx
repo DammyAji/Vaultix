@@ -1,23 +1,9 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import {
-  Download,
-  Filter,
-  Calendar,
-  ExternalLink,
-  Loader2,
-  TrendingUp,
-  TrendingDown,
-  Wallet,
-  ArrowUpDown,
-} from "lucide-react";
+import { Download, Filter, Calendar, ExternalLink, Loader2, TrendingUp, TrendingDown, Wallet, ArrowUpDown } from "lucide-react";
 import { fetchEvents, IEventResponse } from "@/lib/escrow-api";
-import {
-  convertEventsToCSV,
-  downloadCSV,
-  generateTransactionFilename,
-} from "@/lib/csv-export";
+import { convertEventsToCSV, downloadCSV, generateTransactionFilename } from "@/lib/csv-export";
 import { convertEventsToPDF, downloadPDF } from "@/lib/pdf-export";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { ExportDropdown, ExportFormat } from "@/components/ExportDropdown";
 import { ExportModal } from "@/components/ExportModal";
 import { useToast } from "@/hooks/useToast";
+import { TransactionTableSkeleton } from "@/components/ui/TransactionTableSkeleton";
 
 const EVENT_TYPES = [
   { value: "", label: "All Events" },
@@ -207,12 +194,8 @@ export default function TransactionsPage() {
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-foreground mb-2">
-            Transaction History
-          </h1>
-          <p className="text-muted-foreground">
-            View and export all your escrow-related transactions
-          </p>
+          <h1 className="text-3xl font-bold text-foreground mb-2">Transaction History</h1>
+          <p className="text-muted-foreground">View and export all your escrow-related transactions</p>
         </div>
 
         {/* Running Totals */}
@@ -271,9 +254,7 @@ export default function TransactionsPage() {
           <div className="flex flex-wrap gap-4 items-end">
             {/* Event Type Filter */}
             <div className="flex-1 min-w-[200px]">
-              <label className="text-sm font-medium text-foreground mb-1 block">
-                Event Type
-              </label>
+              <label className="text-sm font-medium text-foreground mb-1 block">Event Type</label>
               <select
                 value={eventType}
                 onChange={(e) => {
@@ -292,9 +273,7 @@ export default function TransactionsPage() {
 
             {/* Date From */}
             <div className="flex-1 min-w-[180px]">
-              <label className="text-sm font-medium text-foreground mb-1 block">
-                From Date
-              </label>
+              <label className="text-sm font-medium text-foreground mb-1 block">From Date</label>
               <Input
                 type="date"
                 value={dateFrom}
@@ -308,9 +287,7 @@ export default function TransactionsPage() {
 
             {/* Date To */}
             <div className="flex-1 min-w-[180px]">
-              <label className="text-sm font-medium text-foreground mb-1 block">
-                To Date
-              </label>
+              <label className="text-sm font-medium text-foreground mb-1 block">To Date</label>
               <Input
                 type="date"
                 value={dateTo}
@@ -324,9 +301,7 @@ export default function TransactionsPage() {
 
             {/* Sort Order */}
             <div className="flex-1 min-w-[180px]">
-              <label className="text-sm font-medium text-foreground mb-1 block">
-                Sort By
-              </label>
+              <label className="text-sm font-medium text-foreground mb-1 block">Sort By</label>
               <select
                 value={`${sortBy}-${sortOrder}`}
                 onChange={(e) => {
@@ -343,37 +318,25 @@ export default function TransactionsPage() {
             </div>
 
             {/* Clear Filters */}
-            <Button
-              variant="outline"
-              onClick={clearFilters}
-              className="flex items-center gap-1"
-            >
+            <Button variant="outline" onClick={clearFilters} className="flex items-center gap-1">
               <Filter className="w-4 h-4" />
               Clear
             </Button>
 
             {/* Export */}
-            <ExportDropdown
-              onExport={handleExportClick}
-              disabled={events.length === 0}
-              isLoading={isExporting}
-            />
+            <ExportDropdown onExport={handleExportClick} disabled={events.length === 0} isLoading={isExporting} />
           </div>
         </div>
 
         {/* Transaction Table */}
         <div className="bg-card rounded-lg shadow overflow-hidden border border-border">
           {loading ? (
-            <div className="flex items-center justify-center py-16">
-              <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
-            </div>
+            <TransactionTableSkeleton />
           ) : events.length === 0 ? (
             <div className="text-center py-16">
               <Calendar className="w-16 h-16 mx-auto text-muted-foreground mb-4" />
               <p className="text-foreground text-lg">No transactions found</p>
-              <p className="text-muted-foreground text-sm mt-1">
-                Try adjusting your filters or date range
-              </p>
+              <p className="text-muted-foreground text-sm mt-1">Try adjusting your filters or date range</p>
             </div>
           ) : (
             <>
@@ -381,71 +344,42 @@ export default function TransactionsPage() {
                 <table className="min-w-full divide-y divide-border">
                   <thead className="bg-muted">
                     <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        Date
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        Escrow
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        Event Type
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        Amount
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        Status
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        Tx Hash
-                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Date</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Escrow</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Event Type</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Amount</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Status</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Tx Hash</th>
                     </tr>
                   </thead>
                   <tbody className="bg-card divide-y divide-border">
                     {events.map((event) => {
-                      const txHash =
-                        event.data?.transactionHash ||
-                        event.data?.stellarTxHash;
+                      const txHash = event.data?.transactionHash || event.data?.stellarTxHash;
 
                       return (
                         <tr key={event.id} className="hover:bg-accent/50">
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">
                             {new Date(event.createdAt).toLocaleDateString()}
-                            <div className="text-xs text-muted-foreground">
-                              {new Date(event.createdAt).toLocaleTimeString()}
-                            </div>
+                            <div className="text-xs text-muted-foreground">{new Date(event.createdAt).toLocaleTimeString()}</div>
                           </td>
                           <td className="px-6 py-4">
-                            <div className="text-sm font-medium text-foreground">
-                              {event.escrow?.title || "Unknown"}
-                            </div>
-                            <div className="text-xs text-muted-foreground font-mono">
-                              {event.escrowId.slice(0, 8)}...
-                            </div>
+                            <div className="text-sm font-medium text-foreground">{event.escrow?.title || "Unknown"}</div>
+                            <div className="text-xs text-muted-foreground font-mono">{event.escrowId.slice(0, 8)}...</div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <Badge
-                              className={getEventTypeColor(event.eventType)}
-                            >
-                              {formatEventType(event.eventType)}
-                            </Badge>
+                            <Badge className={getEventTypeColor(event.eventType)}>{formatEventType(event.eventType)}</Badge>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-foreground">
                             {event.escrow ? (
                               <div>
                                 <div className="font-medium">
-                                  {Number(event.escrow.amount).toLocaleString(
-                                    undefined,
-                                    {
-                                      minimumFractionDigits: 2,
-                                      maximumFractionDigits: 7,
-                                    },
-                                  )}
+                                  {Number(event.escrow.amount).toLocaleString(undefined, {
+                                    minimumFractionDigits: 2,
+                                    maximumFractionDigits: 7,
+                                  })}
                                 </div>
                                 <div className="text-xs text-muted-foreground">
-                                  {event.escrow.assetIssuer
-                                    ? `${event.escrow.assetCode}:${event.escrow.assetIssuer.slice(0, 8)}...`
-                                    : event.escrow.assetCode}
+                                  {event.escrow.assetIssuer ? `${event.escrow.assetCode}:${event.escrow.assetIssuer.slice(0, 8)}...` : event.escrow.assetCode}
                                 </div>
                               </div>
                             ) : (
@@ -475,9 +409,7 @@ export default function TransactionsPage() {
                                 rel="noopener noreferrer"
                                 className="text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1"
                               >
-                                <span className="font-mono text-xs">
-                                  {txHash.slice(0, 8)}...
-                                </span>
+                                <span className="font-mono text-xs">{txHash.slice(0, 8)}...</span>
                                 <ExternalLink className="w-3 h-3" />
                               </a>
                             ) : (
@@ -495,33 +427,14 @@ export default function TransactionsPage() {
               <div className="bg-muted/50 px-6 py-4 border-t border-border">
                 <div className="flex items-center justify-between">
                   <div className="text-sm text-foreground">
-                    Showing{" "}
-                    <span className="font-medium">
-                      {(page - 1) * PAGE_SIZE + 1}
-                    </span>{" "}
-                    to{" "}
-                    <span className="font-medium">
-                      {Math.min(page * PAGE_SIZE, total)}
-                    </span>{" "}
+                    Showing <span className="font-medium">{(page - 1) * PAGE_SIZE + 1}</span> to <span className="font-medium">{Math.min(page * PAGE_SIZE, total)}</span>{" "}
                     of <span className="font-medium">{total}</span> results
                   </div>
                   <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setPage((p) => Math.max(1, p - 1))}
-                      disabled={page === 1}
-                    >
+                    <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}>
                       Previous
                     </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        setPage((p) => Math.min(totalPages, p + 1))
-                      }
-                      disabled={page === totalPages}
-                    >
+                    <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages}>
                       Next
                     </Button>
                   </div>
@@ -533,12 +446,7 @@ export default function TransactionsPage() {
       </div>
 
       {/* Export Modal */}
-      <ExportModal
-        isOpen={exportModalOpen}
-        onClose={() => setExportModalOpen(false)}
-        onConfirm={handleExportConfirm}
-        isLoading={isExporting}
-      />
+      <ExportModal isOpen={exportModalOpen} onClose={() => setExportModalOpen(false)} onConfirm={handleExportConfirm} isLoading={isExporting} />
     </div>
   );
 }
