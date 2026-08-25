@@ -404,6 +404,14 @@ const ESCROW_ENTRY_STORAGE_VERSION: i128 = 2;
 const EVENT_NAMESPACE: &str = "Vaultix";
 const EVENT_SCHEMA_VERSION: &str = "v1";
 const MAX_PAGE_SIZE: u32 = 100;
+/// Number of escrow ids stored per party-index chunk.
+///
+/// Matching `MAX_PAGE_SIZE` guarantees any requested page spans at most two
+/// chunks, so `list_escrows_by_party` never loads more than two bounded entries.
+const PARTY_INDEX_CHUNK_SIZE: u32 = 100;
+/// TTL bump threshold / target applied to party-index entries that are touched.
+const PARTY_INDEX_TTL_THRESHOLD: u32 = 100;
+const PARTY_INDEX_TTL_EXTEND_TO: u32 = 1_000_000;
 
 #[derive(Clone, Debug)]
 struct ReleaseOutcome {
@@ -799,6 +807,46 @@ impl VaultixEscrow {
         Ok(())
     }
 
+    /// Test-only helper: write a legacy (pre-chunking) single-vector party index
+    /// under the old `depidx`/`recidx` key so migration can be exercised.
+    #[cfg(test)]
+    pub fn test_set_legacy_party_index(env: Env, party: Address, role: Symbol, ids: Vec<u64>) {
+        let key = if role == symbol_short!("depositor") {
+            get_depositor_index_key(&party)
+        } else {
+            get_recipient_index_key(&party)
+        };
+        env.storage().persistent().set(&key, &ids);
+    }
+
+    /// Test-only helper: does the legacy party index key still exist?
+    #[cfg(test)]
+    pub fn test_has_legacy_party_index(env: Env, party: Address, role: Symbol) -> bool {
+        let key = if role == symbol_short!("depositor") {
+            get_depositor_index_key(&party)
+        } else {
+            get_recipient_index_key(&party)
+        };
+        env.storage().persistent().has(&key)
+    }
+
+    /// Test-only helper: number of ids stored in a single party-index chunk.
+    #[cfg(test)]
+    pub fn test_party_index_chunk_len(env: Env, party: Address, role: Symbol, chunk: u32) -> u32 {
+        let index_role = if role == symbol_short!("depositor") {
+            PartyIndexRole::Depositor
+        } else {
+            PartyIndexRole::Recipient
+        };
+        env.storage()
+            .persistent()
+            .get::<(Symbol, Address, u32), Vec<u64>>(&party_index_chunk_key(
+                index_role, &party, chunk,
+            ))
+            .map(|c| c.len())
+            .unwrap_or(0)
+    }
+
     #[cfg(test)]
     pub fn test_has_escrow_v2(env: Env, escrow_id: u64) -> bool {
         env.storage()
@@ -976,29 +1024,9 @@ impl VaultixEscrow {
 
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-        // Add to depositor index
-        let depositor_index_key = get_depositor_index_key(&depositor);
-        let mut depositor_escrows: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&depositor_index_key)
-            .unwrap_or_else(|| Vec::new(&env));
-        depositor_escrows.push_back(escrow_id);
-        env.storage()
-            .persistent()
-            .set(&depositor_index_key, &depositor_escrows);
-
-        // Add to recipient index
-        let recipient_index_key = get_recipient_index_key(&recipient);
-        let mut recipient_escrows: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&recipient_index_key)
-            .unwrap_or_else(|| Vec::new(&env));
-        recipient_escrows.push_back(escrow_id);
-        env.storage()
-            .persistent()
-            .set(&recipient_index_key, &recipient_escrows);
+        // Add to depositor / recipient indexes (O(1): touches one chunk each)
+        party_index_append(&env, PartyIndexRole::Depositor, &depositor, escrow_id);
+        party_index_append(&env, PartyIndexRole::Recipient, &recipient, escrow_id);
 
         publish_event(
             &env,
@@ -1137,29 +1165,19 @@ impl VaultixEscrow {
 
             store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-            // Add to depositor index
-            let depositor_index_key = get_depositor_index_key(&escrow.depositor);
-            let mut depositor_escrows: Vec<u64> = env
-                .storage()
-                .persistent()
-                .get(&depositor_index_key)
-                .unwrap_or_else(|| Vec::new(&env));
-            depositor_escrows.push_back(escrow_id);
-            env.storage()
-                .persistent()
-                .set(&depositor_index_key, &depositor_escrows);
-
-            // Add to recipient index
-            let recipient_index_key = get_recipient_index_key(&escrow.recipient);
-            let mut recipient_escrows: Vec<u64> = env
-                .storage()
-                .persistent()
-                .get(&recipient_index_key)
-                .unwrap_or_else(|| Vec::new(&env));
-            recipient_escrows.push_back(escrow_id);
-            env.storage()
-                .persistent()
-                .set(&recipient_index_key, &recipient_escrows);
+            // Add to depositor / recipient indexes (O(1): touches one chunk each)
+            party_index_append(
+                &env,
+                PartyIndexRole::Depositor,
+                &escrow.depositor,
+                escrow_id,
+            );
+            party_index_append(
+                &env,
+                PartyIndexRole::Recipient,
+                &escrow.recipient,
+                escrow_id,
+            );
         }
 
         if !created_items.is_empty() {
@@ -1295,35 +1313,32 @@ impl VaultixEscrow {
         }
 
         // Get the appropriate index based on role
-        let index_key = if role == symbol_short!("depositor") {
-            get_depositor_index_key(&party)
+        let index_role = if role == symbol_short!("depositor") {
+            PartyIndexRole::Depositor
         } else if role == symbol_short!("recipient") {
-            get_recipient_index_key(&party)
+            PartyIndexRole::Recipient
         } else {
             return Err(Error::Unauthorized);
         };
 
-        // Get the list of escrow IDs for this party
-        let escrow_ids: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&index_key)
-            .unwrap_or_else(|| Vec::new(&env));
+        // Total indexed ids for this party (O(1); migrates legacy index if needed)
+        let total = party_index_total(&env, index_role, &party);
 
         // Calculate pagination bounds
-        let total = escrow_ids.len();
-        let start_idx = page * page_size;
-        let end_idx = core::cmp::min(start_idx + page_size, total);
+        let start_idx = page.saturating_mul(page_size);
+        let end_idx = core::cmp::min(start_idx.saturating_add(page_size), total);
 
         if start_idx >= total {
             // Page is out of bounds, return empty result
             return Ok(Vec::new(&env));
         }
 
+        // Load only the chunk(s) the requested range spans
+        let escrow_ids = party_index_page_ids(&env, index_role, &party, start_idx, end_idx);
+
         // Collect escrow summaries for the page
         let mut summaries = Vec::new(&env);
-        for i in start_idx..end_idx {
-            let escrow_id = escrow_ids.get(i).unwrap();
+        for escrow_id in escrow_ids.iter() {
             if let Ok(escrow) = load_escrow_entry_v2(&env, escrow_id) {
                 let summary = EscrowSummary {
                     escrow_id,
@@ -1958,16 +1973,193 @@ fn get_escrow_fee_key(escrow_id: u64) -> (Symbol, u64) {
     (symbol_short!("escfee"), escrow_id)
 }
 
-/// Generates storage key for depositor index
-/// Returns a tuple of (Symbol, Address) for scoped storage access
+/// Legacy (pre-chunking) storage key for the depositor index.
+/// Held a single unbounded `Vec<u64>`; only read during lazy migration.
 fn get_depositor_index_key(depositor: &Address) -> (Symbol, Address) {
     (symbol_short!("depidx"), depositor.clone())
 }
 
-/// Generates storage key for recipient index
-/// Returns a tuple of (Symbol, Address) for scoped storage access
+/// Legacy (pre-chunking) storage key for the recipient index.
+/// Held a single unbounded `Vec<u64>`; only read during lazy migration.
 fn get_recipient_index_key(recipient: &Address) -> (Symbol, Address) {
     (symbol_short!("recidx"), recipient.clone())
+}
+
+/// Which per-party index a chunked-index operation targets.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PartyIndexRole {
+    Depositor,
+    Recipient,
+}
+
+/// Storage key holding the total number of ids appended for a (party, role).
+/// Shape: `(Symbol, Address) -> u32`.
+fn party_index_count_key(role: PartyIndexRole, party: &Address) -> (Symbol, Address) {
+    match role {
+        PartyIndexRole::Depositor => (symbol_short!("depcnt"), party.clone()),
+        PartyIndexRole::Recipient => (symbol_short!("reccnt"), party.clone()),
+    }
+}
+
+/// Storage key for one bounded chunk of ids for a (party, role).
+/// Shape: `(Symbol, Address, u32) -> Vec<u64>` with at most
+/// `PARTY_INDEX_CHUNK_SIZE` entries per chunk.
+fn party_index_chunk_key(
+    role: PartyIndexRole,
+    party: &Address,
+    chunk_index: u32,
+) -> (Symbol, Address, u32) {
+    match role {
+        PartyIndexRole::Depositor => (symbol_short!("depchk"), party.clone(), chunk_index),
+        PartyIndexRole::Recipient => (symbol_short!("recchk"), party.clone(), chunk_index),
+    }
+}
+
+/// Legacy single-vector key for a (party, role), used only for lazy migration.
+fn party_index_legacy_key(role: PartyIndexRole, party: &Address) -> (Symbol, Address) {
+    match role {
+        PartyIndexRole::Depositor => get_depositor_index_key(party),
+        PartyIndexRole::Recipient => get_recipient_index_key(party),
+    }
+}
+
+fn extend_party_index_count_ttl(env: &Env, key: &(Symbol, Address)) {
+    env.storage().persistent().extend_ttl(
+        key,
+        PARTY_INDEX_TTL_THRESHOLD,
+        PARTY_INDEX_TTL_EXTEND_TO,
+    );
+}
+
+fn extend_party_index_chunk_ttl(env: &Env, key: &(Symbol, Address, u32)) {
+    env.storage().persistent().extend_ttl(
+        key,
+        PARTY_INDEX_TTL_THRESHOLD,
+        PARTY_INDEX_TTL_EXTEND_TO,
+    );
+}
+
+/// Returns the number of ids indexed for a (party, role), migrating the legacy
+/// unbounded vector into chunks the first time the index is touched.
+///
+/// O(1) for already-migrated parties: a single scalar read of the count key.
+fn party_index_total(env: &Env, role: PartyIndexRole, party: &Address) -> u32 {
+    let count_key = party_index_count_key(role, party);
+    if let Some(count) = env
+        .storage()
+        .persistent()
+        .get::<(Symbol, Address), u32>(&count_key)
+    {
+        extend_party_index_count_ttl(env, &count_key);
+        return count;
+    }
+
+    migrate_legacy_party_index(env, role, party, &count_key)
+}
+
+/// Lazily converts a legacy `Vec<u64>` index into chunked storage.
+/// Returns the migrated count (0 when the party has no legacy entry).
+fn migrate_legacy_party_index(
+    env: &Env,
+    role: PartyIndexRole,
+    party: &Address,
+    count_key: &(Symbol, Address),
+) -> u32 {
+    let legacy_key = party_index_legacy_key(role, party);
+    let legacy_ids: Vec<u64> = match env
+        .storage()
+        .persistent()
+        .get::<(Symbol, Address), Vec<u64>>(&legacy_key)
+    {
+        Some(ids) => ids,
+        // Brand-new party: nothing to migrate, start empty without writing.
+        None => return 0,
+    };
+
+    let total = legacy_ids.len();
+    let mut chunk_index = 0u32;
+    let mut chunk: Vec<u64> = Vec::new(env);
+    for id in legacy_ids.iter() {
+        chunk.push_back(id);
+        if chunk.len() == PARTY_INDEX_CHUNK_SIZE {
+            let chunk_key = party_index_chunk_key(role, party, chunk_index);
+            env.storage().persistent().set(&chunk_key, &chunk);
+            extend_party_index_chunk_ttl(env, &chunk_key);
+            chunk_index += 1;
+            chunk = Vec::new(env);
+        }
+    }
+    if !chunk.is_empty() {
+        let chunk_key = party_index_chunk_key(role, party, chunk_index);
+        env.storage().persistent().set(&chunk_key, &chunk);
+        extend_party_index_chunk_ttl(env, &chunk_key);
+    }
+
+    env.storage().persistent().set(count_key, &total);
+    extend_party_index_count_ttl(env, count_key);
+    env.storage().persistent().remove(&legacy_key);
+
+    total
+}
+
+/// Appends an escrow id to a party index in O(1) storage work: one scalar read,
+/// one bounded chunk read/write, one scalar write. History size is irrelevant.
+fn party_index_append(env: &Env, role: PartyIndexRole, party: &Address, escrow_id: u64) {
+    let total = party_index_total(env, role, party);
+    let chunk_index = total / PARTY_INDEX_CHUNK_SIZE;
+    let chunk_key = party_index_chunk_key(role, party, chunk_index);
+
+    let mut chunk: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&chunk_key)
+        .unwrap_or_else(|| Vec::new(env));
+    chunk.push_back(escrow_id);
+    env.storage().persistent().set(&chunk_key, &chunk);
+    extend_party_index_chunk_ttl(env, &chunk_key);
+
+    let count_key = party_index_count_key(role, party);
+    let new_total = total.saturating_add(1);
+    env.storage().persistent().set(&count_key, &new_total);
+    extend_party_index_count_ttl(env, &count_key);
+}
+
+/// Reads the ids in `[start_idx, end_idx)` for a party index, loading only the
+/// chunks that range actually spans (at most two for a valid page size).
+fn party_index_page_ids(
+    env: &Env,
+    role: PartyIndexRole,
+    party: &Address,
+    start_idx: u32,
+    end_idx: u32,
+) -> Vec<u64> {
+    let mut ids: Vec<u64> = Vec::new(env);
+    if start_idx >= end_idx {
+        return ids;
+    }
+
+    let first_chunk = start_idx / PARTY_INDEX_CHUNK_SIZE;
+    let last_chunk = (end_idx - 1) / PARTY_INDEX_CHUNK_SIZE;
+
+    for chunk_index in first_chunk..=last_chunk {
+        let chunk_key = party_index_chunk_key(role, party, chunk_index);
+        let chunk: Vec<u64> = match env.storage().persistent().get(&chunk_key) {
+            Some(chunk) => chunk,
+            None => continue,
+        };
+        extend_party_index_chunk_ttl(env, &chunk_key);
+
+        let chunk_start = chunk_index * PARTY_INDEX_CHUNK_SIZE;
+        let local_start = start_idx.saturating_sub(chunk_start);
+        let local_end = core::cmp::min(end_idx - chunk_start, chunk.len());
+        let mut i = local_start;
+        while i < local_end {
+            ids.push_back(chunk.get(i).unwrap());
+            i += 1;
+        }
+    }
+
+    ids
 }
 
 fn resolve_fee_with_escrow_override(

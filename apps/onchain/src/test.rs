@@ -3,7 +3,9 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, Events, Ledger},
+    testutils::{
+        Address as _, AuthorizedFunction, AuthorizedInvocation, EnvTestConfig, Events, Ledger,
+    },
     token, vec, Address, Env, IntoVal, Val,
 };
 
@@ -3646,6 +3648,351 @@ fn test_list_escrows_empty_party() {
     let summaries =
         client.list_escrows_by_party(&depositor, &symbol_short!("depositor"), &0u32, &10u32);
     assert_eq!(summaries.len(), 0);
+}
+
+/// `Env` for the chunked party-index tests.
+///
+/// These tests create hundreds of ledger entries, and the default test `Env`
+/// writes a `test_snapshots/*.json` capture of the whole ledger when it drops,
+/// which would mean multi-megabyte snapshot files per test. soroban-sdk 21+
+/// exposes `EnvTestConfig::capture_snapshot_at_drop` so this can be opted out
+/// of explicitly.
+fn index_test_env() -> Env {
+    Env::new_with_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    })
+}
+
+/// Sets up an initialized contract plus a token and single-milestone template
+/// used by the chunked party-index tests.
+fn setup_index_test(
+    env: &Env,
+) -> (
+    VaultixEscrowClient<'_>,
+    Address,
+    soroban_sdk::Vec<Milestone>,
+) {
+    env.mock_all_auths();
+
+    let contract_id = env.register(VaultixEscrow, ());
+    let client = VaultixEscrowClient::new(env, &contract_id);
+
+    let treasury = Address::generate(env);
+    client.initialize(&treasury, &Some(0));
+
+    let admin = Address::generate(env);
+    let (_token_client, _token_admin, token_address) = create_token_contract(env, &admin);
+
+    let milestones = vec![
+        env,
+        Milestone {
+            amount: 5000,
+            status: MilestoneStatus::Pending,
+            description: symbol_short!("Task"),
+        },
+    ];
+
+    (client, token_address, milestones)
+}
+
+#[test]
+fn test_list_escrows_spans_multiple_index_chunks() {
+    let env = index_test_env();
+    let (client, token_address, milestones) = setup_index_test(&env);
+
+    let depositor = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    // 250 escrows => 3 chunks of 100/100/50 for both depositor and recipient.
+    let total: u64 = 250;
+    for i in 1..=total {
+        client.create_escrow(
+            &i,
+            &depositor,
+            &recipient,
+            &token_address,
+            &milestones,
+            &1706400000u64,
+            &valid_metadata_hash(&env),
+        );
+    }
+
+    // Chunks are bounded: no single entry holds the whole history.
+    assert_eq!(
+        client.test_party_index_chunk_len(&depositor, &symbol_short!("depositor"), &0u32),
+        100
+    );
+    assert_eq!(
+        client.test_party_index_chunk_len(&depositor, &symbol_short!("depositor"), &1u32),
+        100
+    );
+    assert_eq!(
+        client.test_party_index_chunk_len(&depositor, &symbol_short!("depositor"), &2u32),
+        50
+    );
+    assert_eq!(
+        client.test_party_index_chunk_len(&depositor, &symbol_short!("depositor"), &3u32),
+        0
+    );
+
+    // Full history is still readable, in order, across pages (both roles).
+    for (role, party) in [
+        (symbol_short!("depositor"), depositor.clone()),
+        (symbol_short!("recipient"), recipient.clone()),
+    ] {
+        let mut seen: u64 = 0;
+        for page in 0..3u32 {
+            let summaries = client.list_escrows_by_party(&party, &role, &page, &100u32);
+            let expected_len = if page == 2 { 50 } else { 100 };
+            assert_eq!(summaries.len(), expected_len);
+            for summary in summaries.iter() {
+                seen += 1;
+                assert_eq!(summary.escrow_id, seen);
+            }
+        }
+        assert_eq!(seen, total);
+
+        // Page past the end is empty.
+        let empty = client.list_escrows_by_party(&party, &role, &3u32, &100u32);
+        assert_eq!(empty.len(), 0);
+    }
+}
+
+#[test]
+fn test_list_escrows_pagination_across_chunk_boundary() {
+    let env = index_test_env();
+    let (client, token_address, milestones) = setup_index_test(&env);
+
+    let depositor = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    for i in 1..=250u64 {
+        client.create_escrow(
+            &i,
+            &depositor,
+            &recipient,
+            &token_address,
+            &milestones,
+            &1706400000u64,
+            &valid_metadata_hash(&env),
+        );
+    }
+
+    // page_size 30 / page 3 => indices [90, 120) => ids 91..=120, straddling the
+    // boundary between chunk 0 (ids 1..=100) and chunk 1 (ids 101..=200).
+    let page = client.list_escrows_by_party(&depositor, &symbol_short!("depositor"), &3u32, &30u32);
+    assert_eq!(page.len(), 30);
+    for (offset, summary) in page.iter().enumerate() {
+        assert_eq!(summary.escrow_id, 91 + offset as u64);
+    }
+
+    // page_size 7 / page 14 => indices [98, 105) => ids 99..=105, also straddling.
+    let page = client.list_escrows_by_party(&depositor, &symbol_short!("depositor"), &14u32, &7u32);
+    assert_eq!(page.len(), 7);
+    for (offset, summary) in page.iter().enumerate() {
+        assert_eq!(summary.escrow_id, 99 + offset as u64);
+    }
+
+    // Boundary between chunk 1 and chunk 2 (ids 201..=250), with a short tail.
+    let page = client.list_escrows_by_party(&recipient, &symbol_short!("recipient"), &4u32, &45u32);
+    assert_eq!(page.len(), 45);
+    for (offset, summary) in page.iter().enumerate() {
+        assert_eq!(summary.escrow_id, 181 + offset as u64);
+    }
+
+    // Last partial page stops at the true total.
+    let page = client.list_escrows_by_party(&recipient, &symbol_short!("recipient"), &5u32, &45u32);
+    assert_eq!(page.len(), 25);
+    assert_eq!(page.get(0).unwrap().escrow_id, 226);
+    assert_eq!(page.get(24).unwrap().escrow_id, 250);
+
+    // MAX_PAGE_SIZE is still enforced now that pages are served from chunks.
+    let too_big =
+        client.try_list_escrows_by_party(&depositor, &symbol_short!("depositor"), &0u32, &101u32);
+    assert_eq!(too_big, Err(Ok(Error::VectorTooLarge)));
+}
+
+#[test]
+fn test_create_escrow_cost_is_independent_of_history() {
+    let env = index_test_env();
+    let (client, token_address, milestones) = setup_index_test(&env);
+
+    let depositor = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let create = |id: u64, from: &Address, to: &Address| {
+        client.create_escrow(
+            &id,
+            from,
+            to,
+            &token_address,
+            &milestones,
+            &1706400000u64,
+            &valid_metadata_hash(&env),
+        );
+    };
+
+    // Build up several chunks of history for one party pair.
+    for i in 1..=250u64 {
+        create(i, &depositor, &recipient);
+    }
+
+    // The test host resets budget metering before every top-level invocation,
+    // so each measurement below covers exactly one `create_escrow` call.
+
+    // Control: a party pair with no history at all, measured at the same total
+    // ledger size so only the per-party history differs.
+    let fresh_depositor = Address::generate(&env);
+    let fresh_recipient = Address::generate(&env);
+    create(251, &fresh_depositor, &fresh_recipient);
+    let fresh_cost = env.cost_estimate().budget().cpu_instruction_cost();
+
+    // Same call for a party with 250 prior escrows.
+    create(252, &depositor, &recipient);
+    let history_cost = env.cost_estimate().budget().cpu_instruction_cost();
+
+    assert!(
+        history_cost <= fresh_cost * 3 / 2,
+        "create_escrow cost grew with party history: fresh={} with_history={}",
+        fresh_cost,
+        history_cost
+    );
+}
+
+#[test]
+fn test_legacy_party_index_migrates_on_list() {
+    let env = index_test_env();
+    let (client, token_address, milestones) = setup_index_test(&env);
+
+    let depositor = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    // Existing escrow entries these legacy ids point at.
+    for i in 1..=120u64 {
+        client.create_escrow(
+            &i,
+            &depositor,
+            &recipient,
+            &token_address,
+            &milestones,
+            &1706400000u64,
+            &valid_metadata_hash(&env),
+        );
+    }
+
+    // A party whose index only exists in the old unbounded-vector format.
+    let legacy_party = Address::generate(&env);
+    let mut legacy_ids = soroban_sdk::Vec::new(&env);
+    for i in 1..=120u64 {
+        legacy_ids.push_back(i);
+    }
+    client.test_set_legacy_party_index(&legacy_party, &symbol_short!("depositor"), &legacy_ids);
+    assert!(client.test_has_legacy_party_index(&legacy_party, &symbol_short!("depositor")));
+
+    // Read-only path migrates and paginates correctly.
+    let page0 =
+        client.list_escrows_by_party(&legacy_party, &symbol_short!("depositor"), &0u32, &100u32);
+    assert_eq!(page0.len(), 100);
+    assert_eq!(page0.get(0).unwrap().escrow_id, 1);
+    assert_eq!(page0.get(99).unwrap().escrow_id, 100);
+
+    let page1 =
+        client.list_escrows_by_party(&legacy_party, &symbol_short!("depositor"), &1u32, &100u32);
+    assert_eq!(page1.len(), 20);
+    assert_eq!(page1.get(0).unwrap().escrow_id, 101);
+    assert_eq!(page1.get(19).unwrap().escrow_id, 120);
+
+    // Legacy entry is gone, data now lives in bounded chunks.
+    assert!(!client.test_has_legacy_party_index(&legacy_party, &symbol_short!("depositor")));
+    assert_eq!(
+        client.test_party_index_chunk_len(&legacy_party, &symbol_short!("depositor"), &0u32),
+        100
+    );
+    assert_eq!(
+        client.test_party_index_chunk_len(&legacy_party, &symbol_short!("depositor"), &1u32),
+        20
+    );
+
+    // Straddling page after migration is still contiguous.
+    let straddle =
+        client.list_escrows_by_party(&legacy_party, &symbol_short!("depositor"), &3u32, &30u32);
+    assert_eq!(straddle.len(), 30);
+    for (offset, summary) in straddle.iter().enumerate() {
+        assert_eq!(summary.escrow_id, 91 + offset as u64);
+    }
+
+    // New appends continue after the migrated history.
+    let new_recipient = Address::generate(&env);
+    client.create_escrow(
+        &900u64,
+        &legacy_party,
+        &new_recipient,
+        &token_address,
+        &milestones,
+        &1706400000u64,
+        &valid_metadata_hash(&env),
+    );
+
+    let page1 =
+        client.list_escrows_by_party(&legacy_party, &symbol_short!("depositor"), &1u32, &100u32);
+    assert_eq!(page1.len(), 21);
+    assert_eq!(page1.get(20).unwrap().escrow_id, 900);
+}
+
+#[test]
+fn test_legacy_party_index_migrates_on_append() {
+    let env = index_test_env();
+    let (client, token_address, milestones) = setup_index_test(&env);
+
+    let depositor = Address::generate(&env);
+    let legacy_recipient = Address::generate(&env);
+
+    for i in 1..=5u64 {
+        client.create_escrow(
+            &i,
+            &depositor,
+            &Address::generate(&env),
+            &token_address,
+            &milestones,
+            &1706400000u64,
+            &valid_metadata_hash(&env),
+        );
+    }
+
+    // Legacy recipient index written directly in the old format.
+    let mut legacy_ids = soroban_sdk::Vec::new(&env);
+    for i in 1..=5u64 {
+        legacy_ids.push_back(i);
+    }
+    client.test_set_legacy_party_index(&legacy_recipient, &symbol_short!("recipient"), &legacy_ids);
+
+    // Append path (create_escrow) triggers migration before the first list.
+    client.create_escrow(
+        &6u64,
+        &depositor,
+        &legacy_recipient,
+        &token_address,
+        &milestones,
+        &1706400000u64,
+        &valid_metadata_hash(&env),
+    );
+
+    assert!(!client.test_has_legacy_party_index(&legacy_recipient, &symbol_short!("recipient")));
+    assert_eq!(
+        client.test_party_index_chunk_len(&legacy_recipient, &symbol_short!("recipient"), &0u32),
+        6
+    );
+
+    let summaries = client.list_escrows_by_party(
+        &legacy_recipient,
+        &symbol_short!("recipient"),
+        &0u32,
+        &10u32,
+    );
+    assert_eq!(summaries.len(), 6);
+    for (offset, summary) in summaries.iter().enumerate() {
+        assert_eq!(summary.escrow_id, 1 + offset as u64);
+    }
 }
 
 #[test]
