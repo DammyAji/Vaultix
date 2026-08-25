@@ -464,7 +464,53 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "depidx"
+                    "symbol": "depchk"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                  },
+                  {
+                    "u32": 0
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "vec": [
+                  {
+                    "u64": "1"
+                  },
+                  {
+                    "u64": "2"
+                  },
+                  {
+                    "u64": "3"
+                  },
+                  {
+                    "u64": "4"
+                  },
+                  {
+                    "u64": "5"
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "depcnt"
                   },
                   {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
@@ -473,23 +519,7 @@
               },
               "durability": "persistent",
               "val": {
-                "vec": [
-                  {
-                    "u64": "1"
-                  },
-                  {
-                    "u64": "2"
-                  },
-                  {
-                    "u64": "3"
-                  },
-                  {
-                    "u64": "4"
-                  },
-                  {
-                    "u64": "5"
-                  }
-                ]
+                "u32": 5
               }
             }
           },
@@ -1467,7 +1497,53 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "recidx"
+                    "symbol": "recchk"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                  },
+                  {
+                    "u32": 0
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "vec": [
+                  {
+                    "u64": "1"
+                  },
+                  {
+                    "u64": "2"
+                  },
+                  {
+                    "u64": "3"
+                  },
+                  {
+                    "u64": "4"
+                  },
+                  {
+                    "u64": "5"
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "reccnt"
                   },
                   {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
@@ -1476,23 +1552,7 @@
               },
               "durability": "persistent",
               "val": {
-                "vec": [
-                  {
-                    "u64": "1"
-                  },
-                  {
-                    "u64": "2"
-                  },
-                  {
-                    "u64": "3"
-                  },
-                  {
-                    "u64": "4"
-                  },
-                  {
-                    "u64": "5"
-                  }
-                ]
+                "u32": 5
               }
             }
           },
