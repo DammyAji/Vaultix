@@ -295,6 +295,8 @@ pub struct DisputeRaisedEvent {
     pub raised_by: Address,
     pub depositor: Address,
     pub recipient: Address,
+    /// Raw sha2-256 digest of the off-chain evidence bundle backing this dispute.
+    pub evidence_hash: BytesN<32>,
     pub status: EscrowStatus,
     pub total_amount: i128,
     pub total_released: i128,
@@ -311,6 +313,9 @@ pub struct DisputeResolvedEvent {
     pub winner_amount: i128,
     pub other_amount: i128,
     pub resolution: Resolution,
+    /// Raw sha2-256 digest of the arbitrator's resolution evidence, or `None`
+    /// when the arbitrator ruled without publishing a supporting document.
+    pub resolution_evidence_hash: Option<BytesN<32>>,
     pub status: EscrowStatus,
     pub total_amount: i128,
     pub total_released: i128,
@@ -395,6 +400,7 @@ pub enum Error {
     ArbitratorNotInitialized = 29,
     InvalidMetadataHash = 30,
     UnsupportedEscrowVersion = 31,
+    DisputeEvidenceNotFound = 32,
 }
 
 const DEFAULT_FEE_BPS: i128 = 50;
@@ -924,7 +930,7 @@ impl VaultixEscrow {
             return Err(Error::SelfDealing);
         }
 
-        validate_metadata_hash(&metadata_hash)?;
+        validate_hash(&metadata_hash)?;
 
         if env
             .storage()
@@ -1045,7 +1051,7 @@ impl VaultixEscrow {
                 return Err(Error::SelfDealing);
             }
 
-            validate_metadata_hash(&metadata_hash)?;
+            validate_hash(&metadata_hash)?;
 
             for existing_id in escrow_ids.iter() {
                 if existing_id == escrow_id {
@@ -1266,6 +1272,47 @@ impl VaultixEscrow {
         Ok(())
     }
 
+    /// Returns the evidence digest recorded when the dispute was raised.
+    ///
+    /// Errors with `EscrowNotFound` when the escrow id is unknown, and with
+    /// `DisputeEvidenceNotFound` when the escrow exists but no dispute was ever
+    /// raised against it (or it predates evidence recording).
+    pub fn get_dispute_evidence(env: Env, escrow_id: u64) -> Result<BytesN<32>, Error> {
+        let escrow = load_escrow_entry_v2(&env, escrow_id)?;
+
+        let key = get_dispute_evidence_key(escrow_id);
+        let evidence_hash = env
+            .storage()
+            .persistent()
+            .get::<(Symbol, u64), BytesN<32>>(&key)
+            .ok_or(Error::DisputeEvidenceNotFound)?;
+        extend_escrow_ttl(&env, &key, &escrow);
+
+        Ok(evidence_hash)
+    }
+
+    /// Returns the arbitrator's resolution evidence digest, if one was supplied.
+    ///
+    /// `Ok(None)` means the dispute was resolved without resolution evidence
+    /// (or is not resolved yet); `EscrowNotFound` means the id is unknown.
+    pub fn get_dispute_resolution_evidence(
+        env: Env,
+        escrow_id: u64,
+    ) -> Result<Option<BytesN<32>>, Error> {
+        let escrow = load_escrow_entry_v2(&env, escrow_id)?;
+
+        let key = get_dispute_resolution_evidence_key(escrow_id);
+        let evidence_hash = env
+            .storage()
+            .persistent()
+            .get::<(Symbol, u64), BytesN<32>>(&key);
+        if evidence_hash.is_some() {
+            extend_escrow_ttl(&env, &key, &escrow);
+        }
+
+        Ok(evidence_hash)
+    }
+
     pub fn get_escrow(env: Env, escrow_id: u64) -> Result<Escrow, Error> {
         let escrow = load_escrow_entry_v2(&env, escrow_id)?;
         Ok(escrow_entry_to_public(escrow))
@@ -1472,8 +1519,22 @@ impl VaultixEscrow {
         Ok(())
     }
 
-    pub fn raise_dispute(env: Env, escrow_id: u64, caller: Address) -> Result<(), Error> {
+    /// Move an escrow into dispute and anchor the off-chain evidence on chain.
+    ///
+    /// `evidence_hash` is the raw 32-byte `sha2-256` digest of the evidence the
+    /// caller uploaded off-chain (see "Dispute Evidence Hash Interop" in
+    /// `docs/contract/README.md`). It is stored under its own escrow-id-keyed
+    /// entry and emitted on `DisputeRaisedEvent`, so the off-chain content is
+    /// tamper-evident: swapping or deleting it no longer matches the record.
+    pub fn raise_dispute(
+        env: Env,
+        escrow_id: u64,
+        caller: Address,
+        evidence_hash: BytesN<32>,
+    ) -> Result<(), Error> {
         ensure_not_paused(&env)?;
+
+        validate_hash(&evidence_hash)?;
 
         let mut escrow = load_escrow_entry_v2(&env, escrow_id)?;
 
@@ -1504,6 +1565,7 @@ impl VaultixEscrow {
         set_escrow_status(&mut escrow, EscrowStatus::Disputed)?;
         set_escrow_resolution(&mut escrow, Resolution::None);
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
+        store_dispute_evidence(&env, escrow_id, &evidence_hash, &escrow);
 
         publish_event(
             &env,
@@ -1513,6 +1575,7 @@ impl VaultixEscrow {
                 raised_by: caller,
                 depositor: escrow.depositor.clone(),
                 recipient: escrow.recipient.clone(),
+                evidence_hash,
                 status: escrow_status(&escrow),
                 total_amount: escrow.total_amount,
                 total_released: escrow.total_released,
@@ -1524,14 +1587,25 @@ impl VaultixEscrow {
         Ok(())
     }
 
+    /// Resolve a dispute, optionally anchoring the arbitrator's own evidence.
+    ///
+    /// `resolution_evidence_hash` is optional: passing `None` is a fully valid,
+    /// zero-friction path for arbitrators who publish no ruling document. When
+    /// `Some`, it follows the same digest convention as `raise_dispute`'s
+    /// `evidence_hash` and is validated with the same rules.
     pub fn resolve_dispute(
         env: Env,
         escrow_id: u64,
         winner: Address,
         split_winner_amount: Option<i128>,
+        resolution_evidence_hash: Option<BytesN<32>>,
     ) -> Result<(), Error> {
         let arbitrator = get_arbitrator_internal(&env)?;
         arbitrator.require_auth();
+
+        if let Some(hash) = resolution_evidence_hash.as_ref() {
+            validate_hash(hash)?;
+        }
 
         let mut escrow = load_escrow_entry_v2(&env, escrow_id)?;
 
@@ -1664,6 +1738,10 @@ impl VaultixEscrow {
         set_escrow_status(&mut escrow, EscrowStatus::Resolved)?;
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
+        if let Some(hash) = resolution_evidence_hash.as_ref() {
+            store_dispute_resolution_evidence(&env, escrow_id, hash, &escrow);
+        }
+
         publish_event(
             &env,
             event_topic(&env, "DisputeResolved"),
@@ -1674,6 +1752,7 @@ impl VaultixEscrow {
                 winner_amount: amount_to_winner,
                 other_amount: amount_to_other,
                 resolution,
+                resolution_evidence_hash,
                 status: escrow_status(&escrow),
                 total_amount: escrow.total_amount,
                 total_released: escrow.total_released,
@@ -1958,6 +2037,18 @@ fn get_escrow_fee_key(escrow_id: u64) -> (Symbol, u64) {
     (symbol_short!("escfee"), escrow_id)
 }
 
+/// Generates storage key for the dispute evidence hash recorded by `raise_dispute`
+/// Returns a tuple of (Symbol, u64) for scoped storage access
+fn get_dispute_evidence_key(escrow_id: u64) -> (Symbol, u64) {
+    (symbol_short!("dispev"), escrow_id)
+}
+
+/// Generates storage key for the arbitrator's optional resolution evidence hash
+/// Returns a tuple of (Symbol, u64) for scoped storage access
+fn get_dispute_resolution_evidence_key(escrow_id: u64) -> (Symbol, u64) {
+    (symbol_short!("disprev"), escrow_id)
+}
+
 /// Generates storage key for depositor index
 /// Returns a tuple of (Symbol, Address) for scoped storage access
 fn get_depositor_index_key(depositor: &Address) -> (Symbol, Address) {
@@ -2148,8 +2239,13 @@ fn validate_milestones(milestones: &Vec<Milestone>) -> Result<i128, Error> {
     Ok(total)
 }
 
-fn validate_metadata_hash(metadata_hash: &BytesN<32>) -> Result<(), Error> {
-    if metadata_hash.to_array() == [0u8; 32] {
+/// Shared validator for 32-byte content digests stored on chain
+/// (escrow `metadata_hash`, dispute evidence hashes).
+///
+/// The all-zero digest is rejected: it is the value a caller ends up with when
+/// no hash was actually computed, so accepting it would anchor nothing.
+fn validate_hash(hash: &BytesN<32>) -> Result<(), Error> {
+    if hash.to_array() == [0u8; 32] {
         return Err(Error::InvalidMetadataHash);
     }
 
@@ -2457,6 +2553,33 @@ fn escrow_entry_to_public(escrow: EscrowEntryV2) -> Escrow {
         collected_signatures: escrow.collected_signatures,
         metadata_hash: escrow.metadata_hash,
     }
+}
+
+/// Persists the dispute evidence digest as a side entry keyed by escrow id and
+/// gives it the same TTL as the escrow entry it belongs to, so a live dispute
+/// cannot outlive its own evidence record.
+fn store_dispute_evidence(
+    env: &Env,
+    escrow_id: u64,
+    evidence_hash: &BytesN<32>,
+    escrow: &EscrowEntryV2,
+) {
+    let key = get_dispute_evidence_key(escrow_id);
+    env.storage().persistent().set(&key, evidence_hash);
+    extend_escrow_ttl(env, &key, escrow);
+}
+
+/// Persists the arbitrator's optional resolution evidence digest alongside the
+/// dispute evidence, with the same escrow-derived TTL.
+fn store_dispute_resolution_evidence(
+    env: &Env,
+    escrow_id: u64,
+    evidence_hash: &BytesN<32>,
+    escrow: &EscrowEntryV2,
+) {
+    let key = get_dispute_resolution_evidence_key(escrow_id);
+    env.storage().persistent().set(&key, evidence_hash);
+    extend_escrow_ttl(env, &key, escrow);
 }
 
 fn extend_escrow_ttl(env: &Env, key: &(Symbol, u64), escrow: &EscrowEntryV2) {

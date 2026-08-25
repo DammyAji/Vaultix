@@ -31,6 +31,14 @@ fn valid_metadata_hash(env: &Env) -> BytesN<32> {
     BytesN::from_array(env, &[7u8; 32])
 }
 
+fn valid_evidence_hash(env: &Env) -> BytesN<32> {
+    BytesN::from_array(env, &[9u8; 32])
+}
+
+fn zero_hash(env: &Env) -> BytesN<32> {
+    BytesN::from_array(env, &[0u8; 32])
+}
+
 /// soroban-sdk 21+ changed `Env::events().all()` to return the opaque
 /// `testutils::ContractEvents` (XDR-backed) instead of the
 /// `Vec<(Address, Vec<Val>, Val)>` that SDK 20 returned. This helper restores
@@ -914,7 +922,7 @@ fn test_dispute_blocks_release() {
     token_client.approve(&depositor, &contract_id, &1000, &200);
     client.deposit_funds(&escrow_id);
 
-    client.raise_dispute(&escrow_id, &depositor);
+    client.raise_dispute(&escrow_id, &depositor, &valid_evidence_hash(&env));
 
     let escrow = client.get_escrow(&escrow_id);
     assert_eq!(escrow.status, EscrowStatus::Disputed);
@@ -1127,9 +1135,9 @@ fn test_admin_resolves_dispute_to_recipient() {
     token_client.approve(&depositor, &contract_id, &10000, &200);
     client.deposit_funds(&escrow_id);
 
-    client.raise_dispute(&escrow_id, &recipient);
+    client.raise_dispute(&escrow_id, &recipient, &valid_evidence_hash(&env));
 
-    client.resolve_dispute(&escrow_id, &recipient, &None);
+    client.resolve_dispute(&escrow_id, &recipient, &None, &None);
 
     let escrow = client.get_escrow(&escrow_id);
     assert_eq!(escrow.status, EscrowStatus::Resolved);
@@ -1192,9 +1200,9 @@ fn test_admin_resolves_dispute_to_depositor() {
     token_client.approve(&depositor, &contract_id, &5000, &200);
     client.deposit_funds(&escrow_id);
 
-    client.raise_dispute(&escrow_id, &depositor);
+    client.raise_dispute(&escrow_id, &depositor, &valid_evidence_hash(&env));
 
-    client.resolve_dispute(&escrow_id, &depositor, &None);
+    client.resolve_dispute(&escrow_id, &depositor, &None, &None);
 
     let escrow = client.get_escrow(&escrow_id);
     assert_eq!(escrow.status, EscrowStatus::Resolved);
@@ -1250,7 +1258,7 @@ fn test_raise_dispute_happy_path() {
         &valid_metadata_hash(&env),
     );
 
-    client.raise_dispute(&escrow_id, &depositor);
+    client.raise_dispute(&escrow_id, &depositor, &valid_evidence_hash(&env));
 
     // Captured before any further invocation: since soroban-sdk 21,
     // `env.events().all()` only reports the last top-level invocation.
@@ -1283,6 +1291,7 @@ fn test_raise_dispute_happy_path() {
             raised_by: depositor,
             depositor: escrow.depositor,
             recipient: escrow.recipient,
+            evidence_hash: valid_evidence_hash(&env),
             status: EscrowStatus::Disputed,
             total_amount: 1000,
             total_released: 0,
@@ -1290,6 +1299,256 @@ fn test_raise_dispute_happy_path() {
             timestamp: 0,
         }
     );
+}
+
+/// Sets up a funded, disputable escrow and returns its client/parties.
+/// Shared by the dispute-evidence tests below.
+fn setup_disputable_escrow<'a>(
+    env: &Env,
+    escrow_id: u64,
+    amount: i128,
+) -> (VaultixEscrowClient<'a>, Address, Address, Address) {
+    let contract_id = env.register(VaultixEscrow, ());
+    let client = VaultixEscrowClient::new(env, &contract_id);
+
+    let admin = Address::generate(env);
+    let operator = Address::generate(env);
+    let arbitrator = Address::generate(env);
+    let depositor = Address::generate(env);
+    let recipient = Address::generate(env);
+
+    let (token_client, token_admin, token_address) = create_token_contract(env, &admin);
+    token_admin.mint(&depositor, &amount);
+
+    client.init(&admin, &operator, &arbitrator);
+
+    let milestones = vec![
+        env,
+        Milestone {
+            amount,
+            status: MilestoneStatus::Pending,
+            description: symbol_short!("Work"),
+        },
+    ];
+
+    client.create_escrow(
+        &escrow_id,
+        &depositor,
+        &recipient,
+        &token_address,
+        &milestones,
+        &1706400000u64,
+        &valid_metadata_hash(env),
+    );
+    token_client.approve(&depositor, &contract_id, &amount, &200);
+    client.deposit_funds(&escrow_id);
+
+    (client, contract_id, depositor, recipient)
+}
+
+/// A valid, non-zero evidence hash is recorded on chain and readable back
+/// through `get_dispute_evidence`.
+#[test]
+fn test_raise_dispute_records_evidence_hash() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = 610u64;
+    let (client, _contract_id, depositor, _recipient) =
+        setup_disputable_escrow(&env, escrow_id, 3000);
+
+    let evidence_hash = BytesN::from_array(&env, &[42u8; 32]);
+    client.raise_dispute(&escrow_id, &depositor, &evidence_hash);
+
+    assert_eq!(client.get_dispute_evidence(&escrow_id), evidence_hash);
+    assert_eq!(client.get_escrow(&escrow_id).status, EscrowStatus::Disputed);
+}
+
+/// The all-zero digest is rejected with the same error `create_escrow` uses for
+/// a zero `metadata_hash`, and no dispute state is written.
+#[test]
+fn test_raise_dispute_rejects_zero_evidence_hash() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = 611u64;
+    let (client, _contract_id, depositor, _recipient) =
+        setup_disputable_escrow(&env, escrow_id, 3000);
+
+    let result = client.try_raise_dispute(&escrow_id, &depositor, &zero_hash(&env));
+    assert_eq!(result, Err(Ok(Error::InvalidMetadataHash)));
+
+    assert_eq!(client.get_escrow(&escrow_id).status, EscrowStatus::Active);
+    assert_eq!(
+        client.try_get_dispute_evidence(&escrow_id),
+        Err(Ok(Error::DisputeEvidenceNotFound))
+    );
+}
+
+/// Reading evidence for an escrow that was never disputed, or for an unknown
+/// escrow id, surfaces explicit errors rather than panicking.
+#[test]
+fn test_get_dispute_evidence_error_paths() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = 612u64;
+    let (client, _contract_id, _depositor, _recipient) =
+        setup_disputable_escrow(&env, escrow_id, 3000);
+
+    assert_eq!(
+        client.try_get_dispute_evidence(&escrow_id),
+        Err(Ok(Error::DisputeEvidenceNotFound))
+    );
+    assert_eq!(
+        client.try_get_dispute_evidence(&999_999u64),
+        Err(Ok(Error::EscrowNotFound))
+    );
+    assert_eq!(
+        client.try_get_dispute_resolution_evidence(&999_999u64),
+        Err(Ok(Error::EscrowNotFound))
+    );
+}
+
+/// The emitted `DisputeRaised` payload carries the exact evidence hash supplied
+/// by the caller.
+#[test]
+fn test_dispute_raised_event_includes_evidence_hash() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = 613u64;
+    let (client, _contract_id, depositor, _recipient) =
+        setup_disputable_escrow(&env, escrow_id, 3000);
+
+    let evidence_hash = BytesN::from_array(&env, &[3u8; 32]);
+    client.raise_dispute(&escrow_id, &depositor, &evidence_hash);
+
+    // Captured before any further invocation: since soroban-sdk 21,
+    // `env.events().all()` only reports the last top-level invocation.
+    let events = all_events(&env);
+    let event = events.last().unwrap();
+    let expected_topics: soroban_sdk::Vec<soroban_sdk::Val> = (
+        Symbol::new(&env, "Vaultix"),
+        Symbol::new(&env, "v1"),
+        Symbol::new(&env, "DisputeRaised"),
+    )
+        .into_val(&env);
+    assert_eq!(event.1, expected_topics);
+
+    let escrow = client.get_escrow(&escrow_id);
+    let payload: DisputeRaisedEvent = event.2.into_val(&env);
+    assert_eq!(
+        payload,
+        DisputeRaisedEvent {
+            escrow_id,
+            raised_by: depositor,
+            depositor: escrow.depositor,
+            recipient: escrow.recipient,
+            evidence_hash,
+            status: EscrowStatus::Disputed,
+            total_amount: 3000,
+            total_released: 0,
+            deadline: 1706400000,
+            timestamp: 0,
+        }
+    );
+}
+
+/// Arbitrator supplies resolution evidence: it is stored, readable, and echoed
+/// on the `DisputeResolved` event.
+#[test]
+fn test_resolve_dispute_records_resolution_evidence() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = 614u64;
+    let (client, _contract_id, depositor, recipient) =
+        setup_disputable_escrow(&env, escrow_id, 3000);
+
+    let evidence_hash = BytesN::from_array(&env, &[11u8; 32]);
+    let resolution_hash = BytesN::from_array(&env, &[12u8; 32]);
+
+    client.raise_dispute(&escrow_id, &depositor, &evidence_hash);
+    client.resolve_dispute(
+        &escrow_id,
+        &recipient,
+        &None,
+        &Some(resolution_hash.clone()),
+    );
+
+    // Captured before any further invocation: since soroban-sdk 21,
+    // `env.events().all()` only reports the last top-level invocation.
+    let events = all_events(&env);
+
+    assert_eq!(client.get_dispute_evidence(&escrow_id), evidence_hash);
+    assert_eq!(
+        client.get_dispute_resolution_evidence(&escrow_id),
+        Some(resolution_hash.clone())
+    );
+
+    let event = events.last().unwrap();
+    let expected_topics: soroban_sdk::Vec<soroban_sdk::Val> = (
+        Symbol::new(&env, "Vaultix"),
+        Symbol::new(&env, "v1"),
+        Symbol::new(&env, "DisputeResolved"),
+    )
+        .into_val(&env);
+    assert_eq!(event.1, expected_topics);
+
+    let payload: DisputeResolvedEvent = event.2.into_val(&env);
+    assert_eq!(payload.resolution_evidence_hash, Some(resolution_hash));
+    assert_eq!(payload.escrow_id, escrow_id);
+}
+
+/// `None` resolution evidence stays a zero-friction path: resolution succeeds,
+/// nothing is stored, and the event reports the absence explicitly.
+#[test]
+fn test_resolve_dispute_without_resolution_evidence() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = 615u64;
+    let (client, _contract_id, depositor, recipient) =
+        setup_disputable_escrow(&env, escrow_id, 3000);
+
+    client.raise_dispute(&escrow_id, &depositor, &valid_evidence_hash(&env));
+    client.resolve_dispute(&escrow_id, &recipient, &None, &None);
+
+    // Captured before any further invocation: since soroban-sdk 21,
+    // `env.events().all()` only reports the last top-level invocation.
+    let events = all_events(&env);
+
+    assert_eq!(client.get_escrow(&escrow_id).status, EscrowStatus::Resolved);
+    assert_eq!(client.get_dispute_resolution_evidence(&escrow_id), None);
+    // Dispute evidence survives resolution.
+    assert_eq!(
+        client.get_dispute_evidence(&escrow_id),
+        valid_evidence_hash(&env)
+    );
+
+    let payload: DisputeResolvedEvent = events.last().unwrap().2.into_val(&env);
+    assert_eq!(payload.resolution_evidence_hash, None);
+}
+
+/// An all-zero resolution evidence hash is rejected with the same digest error,
+/// and the dispute stays open.
+#[test]
+fn test_resolve_dispute_rejects_zero_resolution_evidence() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = 616u64;
+    let (client, _contract_id, depositor, recipient) =
+        setup_disputable_escrow(&env, escrow_id, 3000);
+
+    client.raise_dispute(&escrow_id, &depositor, &valid_evidence_hash(&env));
+
+    let result = client.try_resolve_dispute(&escrow_id, &recipient, &None, &Some(zero_hash(&env)));
+    assert_eq!(result, Err(Ok(Error::InvalidMetadataHash)));
+
+    assert_eq!(client.get_escrow(&escrow_id).status, EscrowStatus::Disputed);
+    assert_eq!(client.get_dispute_resolution_evidence(&escrow_id), None);
 }
 
 #[test]
@@ -1337,7 +1596,8 @@ fn test_raise_dispute_invalid_status() {
     client.confirm_delivery(&escrow_id_completed, &0, &depositor);
     client.complete_escrow(&escrow_id_completed);
 
-    let result_completed = client.try_raise_dispute(&escrow_id_completed, &depositor);
+    let result_completed =
+        client.try_raise_dispute(&escrow_id_completed, &depositor, &valid_evidence_hash(&env));
     assert_eq!(result_completed, Err(Ok(Error::InvalidEscrowStatus)));
 
     // Cancelled escrow
@@ -1354,7 +1614,8 @@ fn test_raise_dispute_invalid_status() {
     client.deposit_funds(&escrow_id_cancelled);
     client.cancel_escrow(&escrow_id_cancelled);
 
-    let result_cancelled = client.try_raise_dispute(&escrow_id_cancelled, &depositor);
+    let result_cancelled =
+        client.try_raise_dispute(&escrow_id_cancelled, &depositor, &valid_evidence_hash(&env));
     assert_eq!(result_cancelled, Err(Ok(Error::InvalidEscrowStatus)));
 }
 
@@ -1400,10 +1661,10 @@ fn test_resolve_dispute_invalid_winner_or_overflow() {
     token_client.approve(&depositor, &contract_id, &1000, &200);
     client.deposit_funds(&escrow_id);
 
-    client.raise_dispute(&escrow_id, &depositor);
+    client.raise_dispute(&escrow_id, &depositor, &valid_evidence_hash(&env));
 
     // Invalid winner
-    let result_invalid_winner = client.try_resolve_dispute(&escrow_id, &outsider, &None);
+    let result_invalid_winner = client.try_resolve_dispute(&escrow_id, &outsider, &None, &None);
     assert_eq!(result_invalid_winner, Err(Ok(Error::InvalidWinner)));
 }
 
@@ -1451,13 +1712,13 @@ fn test_resolve_dispute_while_paused() {
     token_client.approve(&depositor, &contract_id, &5000, &200);
     client.deposit_funds(&escrow_id);
 
-    client.raise_dispute(&escrow_id, &depositor);
+    client.raise_dispute(&escrow_id, &depositor, &valid_evidence_hash(&env));
 
     // Pause contract after dispute is raised
     client.set_paused(&true);
 
     // Resolution should still be allowed by admin while paused
-    client.resolve_dispute(&escrow_id, &depositor, &None);
+    client.resolve_dispute(&escrow_id, &depositor, &None, &None);
 
     let escrow = client.get_escrow(&escrow_id);
     assert_eq!(escrow.status, EscrowStatus::Resolved);
@@ -1508,10 +1769,10 @@ fn test_resolve_dispute_split_recipient_wins() {
     );
     token_client.approve(&depositor, &contract_id, &3000, &200);
     client.deposit_funds(&escrow_id);
-    client.raise_dispute(&escrow_id, &recipient);
+    client.raise_dispute(&escrow_id, &recipient, &valid_evidence_hash(&env));
 
     // Recipient wins 2000, depositor gets back 1000
-    client.resolve_dispute(&escrow_id, &recipient, &Some(2000));
+    client.resolve_dispute(&escrow_id, &recipient, &Some(2000), &None);
 
     let escrow = client.get_escrow(&escrow_id);
     assert_eq!(escrow.status, EscrowStatus::Resolved);
@@ -1566,10 +1827,10 @@ fn test_resolve_dispute_split_depositor_wins() {
     );
     token_client.approve(&depositor, &contract_id, &3000, &200);
     client.deposit_funds(&escrow_id);
-    client.raise_dispute(&escrow_id, &depositor);
+    client.raise_dispute(&escrow_id, &depositor, &valid_evidence_hash(&env));
 
     // Depositor wins 2000, recipient gets 1000
-    client.resolve_dispute(&escrow_id, &depositor, &Some(2000));
+    client.resolve_dispute(&escrow_id, &depositor, &Some(2000), &None);
 
     let escrow = client.get_escrow(&escrow_id);
     assert_eq!(escrow.status, EscrowStatus::Resolved);
@@ -1623,9 +1884,9 @@ fn test_resolve_dispute_split_negative_amount() {
     );
     token_client.approve(&depositor, &contract_id, &1000, &200);
     client.deposit_funds(&escrow_id);
-    client.raise_dispute(&escrow_id, &depositor);
+    client.raise_dispute(&escrow_id, &depositor, &valid_evidence_hash(&env));
 
-    let result = client.try_resolve_dispute(&escrow_id, &recipient, &Some(-1));
+    let result = client.try_resolve_dispute(&escrow_id, &recipient, &Some(-1), &None);
     assert_eq!(result, Err(Ok(Error::InvalidMilestoneAmount)));
 
     // No funds should have moved
@@ -1673,10 +1934,10 @@ fn test_resolve_dispute_split_exceeds_outstanding() {
     );
     token_client.approve(&depositor, &contract_id, &1000, &200);
     client.deposit_funds(&escrow_id);
-    client.raise_dispute(&escrow_id, &depositor);
+    client.raise_dispute(&escrow_id, &depositor, &valid_evidence_hash(&env));
 
     // 1001 > 1000 outstanding
-    let result = client.try_resolve_dispute(&escrow_id, &recipient, &Some(1001));
+    let result = client.try_resolve_dispute(&escrow_id, &recipient, &Some(1001), &None);
     assert_eq!(result, Err(Ok(Error::InvalidMilestoneAmount)));
 
     // No funds should have moved
@@ -1728,18 +1989,18 @@ fn test_resolved_is_terminal() {
     );
     token_client.approve(&depositor, &contract_id, &2000, &200);
     client.deposit_funds(&escrow_id);
-    client.raise_dispute(&escrow_id, &depositor);
+    client.raise_dispute(&escrow_id, &depositor, &valid_evidence_hash(&env));
 
     // Resolve: recipient wins all
-    client.resolve_dispute(&escrow_id, &recipient, &None);
+    client.resolve_dispute(&escrow_id, &recipient, &None, &None);
     assert_eq!(client.get_escrow(&escrow_id).status, EscrowStatus::Resolved);
 
     // raise_dispute must be blocked
-    let r = client.try_raise_dispute(&escrow_id, &depositor);
+    let r = client.try_raise_dispute(&escrow_id, &depositor, &valid_evidence_hash(&env));
     assert_eq!(r, Err(Ok(Error::InvalidEscrowStatus)));
 
     // resolve_dispute again must be blocked (not Disputed)
-    let r = client.try_resolve_dispute(&escrow_id, &recipient, &None);
+    let r = client.try_resolve_dispute(&escrow_id, &recipient, &None, &None);
     assert_eq!(r, Err(Ok(Error::InvalidEscrowStatus)));
 
     // cancel_escrow must be blocked
@@ -2551,7 +2812,7 @@ fn test_refund_expired_blocked_when_disputed() {
     let (client, depositor, escrow_id, _, _) = setup_funded_escrow_for_refund(&env, deadline);
 
     // Raise a dispute before the deadline passes
-    client.raise_dispute(&escrow_id, &depositor);
+    client.raise_dispute(&escrow_id, &depositor, &valid_evidence_hash(&env));
 
     // Advance past deadline
     env.ledger().with_mut(|li| li.timestamp = deadline + 1);
@@ -2658,12 +2919,12 @@ fn test_resolve_dispute_fails_without_arbitrator_initialized() {
     );
     token_client.approve(&depositor, &contract_id, &1000, &200);
     client.deposit_funds(&escrow_id);
-    client.raise_dispute(&escrow_id, &depositor);
+    client.raise_dispute(&escrow_id, &depositor, &valid_evidence_hash(&env));
 
     let winner = Address::generate(&env);
 
     // This should now correctly panic with ArbitratorNotInitialized (29)
-    client.resolve_dispute(&escrow_id, &winner, &None);
+    client.resolve_dispute(&escrow_id, &winner, &None, &None);
 }
 // ===============================================================================
 // Configurable Fee Model Tests (Feature #93)

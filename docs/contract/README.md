@@ -54,6 +54,16 @@ The contract defines several key roles, each with specific permissions:
 - CID mapping: when metadata is pinned to IPFS, decode the CID multihash and extract the `sha2-256` digest bytes. New writes should prefer CIDv1 base32.
 - Validation: the contract rejects the all-zero digest, and off-chain clients reject malformed hex/CID inputs.
 
+## Dispute Evidence Hash Interop
+
+`raise_dispute` takes a required `evidence_hash` and `resolve_dispute` takes an optional `resolution_evidence_hash`, both `BytesN<32>`. They follow the **identical** convention and encoding as `metadata_hash` above (raw 32-byte `sha2-256` digest on chain, lowercase 64-character hex off chain, digest bytes extracted from the IPFS CID multihash, all-zero digest rejected with `InvalidMetadataHash`) — see [Metadata Hash Interop](#metadata-hash-interop) for the full rules.
+
+Dispute-specific notes:
+
+- **One digest per dispute.** The contract stores a single `BytesN<32>` per escrow, so when a dispute is backed by multiple evidence files the backend must anchor a bundle rather than an individual file: it builds a deterministic JSON manifest `{"cids": [...]}` with the CIDs sorted lexicographically and no insignificant whitespace, pins that manifest, and submits the manifest's own `sha2-256` digest on chain. A single-file dispute may submit that file's digest directly.
+- **Storage.** The digest is not part of the escrow record; it lives in its own escrow-id-keyed persistent entry (`dispev` for the raiser's evidence, `disprev` for the arbitrator's), read back via `get_dispute_evidence(escrow_id)` and `get_dispute_resolution_evidence(escrow_id)`.
+- **Absence.** `get_dispute_evidence` returns `DisputeEvidenceNotFound` for an escrow that was never disputed, and `EscrowNotFound` for an unknown id. `get_dispute_resolution_evidence` returns `None` when the arbitrator supplied no ruling document — resolution evidence is optional and omitting it is a fully supported path. `DisputeResolvedEvent.resolution_evidence_hash` is itself an `Option<BytesN<32>>`, so that absence is carried through to the event payload as `None`.
+
 ## Contract Spec Artifact & Binding Regeneration
 
 The contract interface is exported as a Soroban contract specification artifact to keep off-chain clients in sync.

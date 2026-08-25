@@ -204,6 +204,9 @@
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
+                },
+                {
+                  "bytes": "0909090909090909090909090909090909090909090909090909090909090909"
                 }
               ]
             }
@@ -229,7 +232,8 @@
                 },
                 {
                   "i128": "2000"
-                }
+                },
+                "void"
               ]
             }
           },
@@ -377,6 +381,33 @@
                     "u64": "500"
                   }
                 ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "dispev"
+                  },
+                  {
+                    "u64": "500"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "bytes": "0909090909090909090909090909090909090909090909090909090909090909"
               }
             }
           },
