@@ -29,6 +29,10 @@ soroban contract deploy --wasm target/wasm32-unknown-unknown/release/vaultix_esc
     --source YOUR_ACCOUNT_SECRET
 ```
 
+For an automated, CI-driven alternative to the manual steps above (including
+role initialization, a post-deploy smoke check, and a committed deployment
+registry), see [`DEPLOYMENT.md`](./DEPLOYMENT.md).
+
 ## Roles
 
 The contract defines several key roles, each with specific permissions:
