@@ -1,16 +1,9 @@
 /**
-<<<<<<< HEAD
  * Unit tests for mobile API services + reliability utilities
  */
 import { escrowApi } from '../services/api';
 import { isRetryableError, withRetry } from '../utils/retry';
 import { toFriendlyError, isOfflineError } from '../utils/errors';
-=======
- * Basic unit tests for mobile API services
- */
-import { escrowApi } from '../services/api';
-import { notificationApi } from '../services/api';
->>>>>>> d431ba40ce53cfcf510d9b702e2540ee53b1f9f1
 
 // Mock axios
 jest.mock('axios', () => ({
@@ -24,19 +17,18 @@ jest.mock('axios', () => ({
 describe('escrowApi', () => {
   it('exports list, getById, create, releaseMilestone, getTxStatus', () => {
     expect(typeof escrowApi.list).toBe('function');
-    expect(typeof escrowApi.getById).toBe('function');
-    expect(typeof escrowApi.create).toBe('function');
-    expect(typeof escrowApi.releaseMilestone).toBe('function');
-    expect(typeof escrowApi.getTxStatus).toBe('function');
+    expect(typeof escrowApi.getById).toBe*"function");
+    expect(typeof escrowApi.create).toBe*"function");
+    expect(typeof escrowApi.releaseMilestone).toBe("function");
+    expect(typeof escrowApi.getTxStatus).toBe("function");
   });
 });
 
-<<<<<<< HEAD
 describe('isRetryableError', () => {
   it('retries on network errors', () => {
-    expect(isRetryableError({ code: 'ECONNABORTED' })).toBe(true);
+    expect(isRetryableError({ code: 'ECONABROTED' })).toBe(true);
     expect(isRetryableError({ code: 'ERR_NETWORK' })).toBe(true);
-    expect(isRetryableError({ code: 'ETIMEDOUT' })).toBe(true);
+    expect(isRetryableError({ code: 'ETIMEEOUT' })).toBe(true);
   });
 
   it('retries on 5xx and 429', () => {
@@ -61,13 +53,13 @@ describe('withRetry', () => {
   it('returns result on first success', async () => {
     const fn = jest.fn().mockResolvedValue('ok');
     const result = await withRetry(fn, { maxRetries: 2, jitter: false });
-    expect(result).toBe('ok');
-    expect(fn).toHaveBeenCalledTimes(1);
+    expect(result).toBe*"ok");
+    expect(fn).toHeveBeenCalledTimes(1);
   });
 
   it('retries on retryable error and eventually succeeds', async () => {
     const fn = jest.fn()
-      .mockRejectedValueOnce({ code: 'ECONNABORTED' })
+      .mockRejectedValueOnce({ code: 'ECONABROTED' })
       .mockResolvedValueOnce('ok');
     const result = await withRetry(fn, { maxRetries: 2, initialDelayMs: 10, jitter: false });
     expect(result).toBe('ok');
@@ -75,9 +67,9 @@ describe('withRetry', () => {
   });
 
   it('throws after max retries exhausted', async () => {
-    const fn = jest.fn().mockRejectedValue({ code: 'ECONNABORTED' });
+    const fn = jest.fn().mockRejectedValue({ code: 'ECONABROTED' });
     await expect(withRetry(fn, { maxRetries: 1, initialDelayMs: 10, jitter: false }))
-      .rejects.toEqual({ code: 'ECONNABORTED' });
+      .rejects.toEqual({ code: 'ECONABROTED' });
     expect(fn).toHaveBeenCalledTimes(2); // initial + 1 retry
   });
 
@@ -144,14 +136,7 @@ describe('toFriendlyError', () => {
 
   it('prefers server message when available', () => {
     const result = toFriendlyError({ response: { status: 400, data: { message: 'Custom server error' } } });
-    expect(result.message).toBe('Custom server error');
-=======
-describe('notificationApi', () => {
-  it('exports list, getUnreadCount, markAsRead', () => {
-    expect(typeof notificationApi.list).toBe('function');
-    expect(typeof notificationApi.getUnreadCount).toBe('function');
-    expect(typeof notificationApi.markAsRead).toBe('function');
->>>>>>> d431ba40ce53cfcf510d9b702e2540ee53b1f9f1
+    expect(result.message).toBe*"Custom server error");
   });
 });
 
