@@ -10,7 +10,9 @@ use soroban_sdk::{
 /// Helper function to create and initialize a test token
 /// Returns admin client for minting and the token address
 fn create_test_token<'a>(env: &Env, admin: &Address) -> (token::StellarAssetClient<'a>, Address) {
-    let token_address = env.register_stellar_asset_contract(admin.clone());
+    let token_address = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
     let token_admin_client = token::StellarAssetClient::new(env, &token_address);
     (token_admin_client, token_address)
 }
@@ -27,6 +29,37 @@ fn create_token_contract<'a>(
 
 fn valid_metadata_hash(env: &Env) -> BytesN<32> {
     BytesN::from_array(env, &[7u8; 32])
+}
+
+/// soroban-sdk 21+ changed `Env::events().all()` to return the opaque
+/// `testutils::ContractEvents` (XDR-backed) instead of the
+/// `Vec<(Address, Vec<Val>, Val)>` that SDK 20 returned. This helper restores
+/// the old shape so the existing assertions keep working unchanged.
+fn all_events(env: &Env) -> soroban_sdk::Vec<(Address, soroban_sdk::Vec<Val>, Val)> {
+    use soroban_sdk::xdr::{ContractEventBody, ScAddress, ScVal};
+    use soroban_sdk::TryFromVal;
+
+    let captured = env.events().all();
+    let mut out = soroban_sdk::Vec::new(env);
+    for event in captured.events() {
+        let contract_id = event
+            .contract_id
+            .clone()
+            .expect("contract event without contract id");
+        let address_val =
+            Val::try_from_val(env, &ScVal::Address(ScAddress::Contract(contract_id))).unwrap();
+        let address = Address::try_from_val(env, &address_val).unwrap();
+
+        let ContractEventBody::V0(body) = &event.body;
+        let mut topics = soroban_sdk::Vec::new(env);
+        for topic in body.topics.iter() {
+            topics.push_back(Val::try_from_val(env, topic).unwrap());
+        }
+        let data = Val::try_from_val(env, &body.data).unwrap();
+
+        out.push_back((address, topics, data));
+    }
+    out
 }
 
 fn assert_role_updated_event(
@@ -66,7 +99,7 @@ fn test_initialize_fails_when_treasury_already_initialized() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -86,7 +119,7 @@ fn test_role_rotation_requires_current_admin_auth() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -171,7 +204,7 @@ fn test_role_rotation_updates_roles_and_emits_audit_events() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -187,57 +220,65 @@ fn test_role_rotation_updates_roles_and_emits_audit_events() {
     let replacement_arbitrator = Address::generate(&env);
     let replacement_treasury = Address::generate(&env);
 
-    let events_before = env.events().all().len();
-
+    // Note: since soroban-sdk 21, `env.events().all()` only returns the events
+    // of the most recent top-level invocation, so each rotation is asserted
+    // immediately after its own call rather than against an accumulated log.
     client.set_admin(&replacement_admin);
-    client.set_operator(&replacement_operator);
-    client.set_arbitrator(&replacement_arbitrator);
-    client.set_treasury(&replacement_treasury);
-
-    assert_eq!(client.get_admin(), replacement_admin);
-    assert_eq!(client.get_operator(), replacement_operator);
-    assert_eq!(client.get_arbitrator(), replacement_arbitrator);
-    assert_eq!(client.get_treasury(), replacement_treasury);
-
-    let events = env.events().all();
-    assert_eq!(events.len(), events_before + 4);
-
+    let events = all_events(&env);
+    assert_eq!(events.len(), 1);
     assert_role_updated_event(
         &env,
         &contract_id,
-        &events.get(events_before).unwrap(),
+        &events.get(0).unwrap(),
         Role::Admin,
         true,
         &admin,
         &replacement_admin,
     );
+
+    client.set_operator(&replacement_operator);
+    let events = all_events(&env);
+    assert_eq!(events.len(), 1);
     assert_role_updated_event(
         &env,
         &contract_id,
-        &events.get(events_before + 1).unwrap(),
+        &events.get(0).unwrap(),
         Role::Operator,
         true,
         &operator,
         &replacement_operator,
     );
+
+    client.set_arbitrator(&replacement_arbitrator);
+    let events = all_events(&env);
+    assert_eq!(events.len(), 1);
     assert_role_updated_event(
         &env,
         &contract_id,
-        &events.get(events_before + 2).unwrap(),
+        &events.get(0).unwrap(),
         Role::Arbitrator,
         true,
         &arbitrator,
         &replacement_arbitrator,
     );
+
+    client.set_treasury(&replacement_treasury);
+    let events = all_events(&env);
+    assert_eq!(events.len(), 1);
     assert_role_updated_event(
         &env,
         &contract_id,
-        &events.get(events_before + 3).unwrap(),
+        &events.get(0).unwrap(),
         Role::Treasury,
         true,
         &treasury,
         &replacement_treasury,
     );
+
+    assert_eq!(client.get_admin(), replacement_admin);
+    assert_eq!(client.get_operator(), replacement_operator);
+    assert_eq!(client.get_arbitrator(), replacement_arbitrator);
+    assert_eq!(client.get_treasury(), replacement_treasury);
 }
 
 #[test]
@@ -245,7 +286,7 @@ fn test_create_escrow_fails_when_paused() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -295,7 +336,7 @@ fn test_deposit_funds_fails_when_paused() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -344,7 +385,7 @@ fn test_create_and_get_escrow() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -387,6 +428,10 @@ fn test_create_and_get_escrow() {
         &valid_metadata_hash(&env),
     );
 
+    // Captured before any further invocation: since soroban-sdk 21,
+    // `env.events().all()` only reports the last top-level invocation.
+    let events = all_events(&env);
+
     let escrow = client.get_escrow(&escrow_id);
     assert_eq!(escrow.depositor, depositor);
     assert_eq!(escrow.recipient, recipient);
@@ -397,7 +442,6 @@ fn test_create_and_get_escrow() {
     assert_eq!(escrow.milestones.len(), 3);
 
     // Verify canonical create event schema
-    let events = env.events().all();
     let event = events.last().unwrap();
     assert_eq!(event.0, contract_id);
 
@@ -439,7 +483,7 @@ fn test_create_escrow_rejects_zero_metadata_hash() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -475,7 +519,7 @@ fn test_create_escrows_batch_rejects_zero_metadata_hash() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -512,7 +556,7 @@ fn test_create_escrows_batch_and_get() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -571,6 +615,10 @@ fn test_create_escrows_batch_and_get() {
 
     client.create_escrows_batch(&requests);
 
+    // Captured before any further invocation: since soroban-sdk 21,
+    // `env.events().all()` only reports the last top-level invocation.
+    let events = all_events(&env);
+
     let escrow_1 = client.get_escrow(&escrow_id_1);
     assert_eq!(escrow_1.depositor, depositor);
     assert_eq!(escrow_1.recipient, recipient_1);
@@ -589,7 +637,6 @@ fn test_create_escrows_batch_and_get() {
     assert_eq!(escrow_2.status, EscrowStatus::Created);
     assert_eq!(escrow_2.deadline, deadline_2);
 
-    let events = env.events().all();
     let event = events.last().unwrap();
     assert_eq!(event.0, contract_id);
 
@@ -642,7 +689,7 @@ fn test_create_escrows_batch_is_atomic() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -688,7 +735,7 @@ fn test_create_escrows_batch_is_atomic() {
     let get_result = client.try_get_escrow(&escrow_id);
     assert_eq!(get_result, Err(Ok(Error::EscrowNotFound)));
 
-    let events = env.events().all();
+    let events = all_events(&env);
     assert_eq!(events.len(), 0);
 }
 
@@ -697,7 +744,7 @@ fn test_deposit_funds() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -757,7 +804,7 @@ fn test_release_milestone_with_tokens() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -834,7 +881,7 @@ fn test_dispute_blocks_release() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -880,7 +927,7 @@ fn test_complete_escrow_with_all_releases() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -942,7 +989,7 @@ fn test_cancel_escrow_with_refund() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -996,7 +1043,7 @@ fn test_cancel_unfunded_escrow() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -1038,7 +1085,7 @@ fn test_admin_resolves_dispute_to_recipient() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -1103,7 +1150,7 @@ fn test_admin_resolves_dispute_to_depositor() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -1168,7 +1215,7 @@ fn test_raise_dispute_happy_path() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -1203,9 +1250,11 @@ fn test_raise_dispute_happy_path() {
         &valid_metadata_hash(&env),
     );
 
-    let events_before = env.events().all().len();
-
     client.raise_dispute(&escrow_id, &depositor);
+
+    // Captured before any further invocation: since soroban-sdk 21,
+    // `env.events().all()` only reports the last top-level invocation.
+    let events = all_events(&env);
 
     let escrow = client.get_escrow(&escrow_id);
     assert_eq!(escrow.status, EscrowStatus::Disputed);
@@ -1216,8 +1265,7 @@ fn test_raise_dispute_happy_path() {
         .all(|m| m.status == MilestoneStatus::Disputed || m.status == MilestoneStatus::Released));
 
     // Verify DisputeRaised event
-    let events = env.events().all();
-    assert!(events.len() > events_before);
+    assert!(!events.is_empty());
     let event = events.last().unwrap();
     let expected_topics: soroban_sdk::Vec<soroban_sdk::Val> = (
         Symbol::new(&env, "Vaultix"),
@@ -1249,7 +1297,7 @@ fn test_raise_dispute_invalid_status() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -1315,7 +1363,7 @@ fn test_resolve_dispute_invalid_winner_or_overflow() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -1364,7 +1412,7 @@ fn test_resolve_dispute_while_paused() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -1425,7 +1473,7 @@ fn test_resolve_dispute_split_recipient_wins() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -1483,7 +1531,7 @@ fn test_resolve_dispute_split_depositor_wins() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -1540,7 +1588,7 @@ fn test_resolve_dispute_split_negative_amount() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -1590,7 +1638,7 @@ fn test_resolve_dispute_split_exceeds_outstanding() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -1642,7 +1690,7 @@ fn test_resolved_is_terminal() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -1714,7 +1762,7 @@ fn test_duplicate_escrow_id() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -1759,7 +1807,7 @@ fn test_double_release() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     // Initialize treasury
@@ -1809,7 +1857,7 @@ fn test_too_many_milestones() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -1846,7 +1894,7 @@ fn test_invalid_milestone_amount() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -1883,7 +1931,7 @@ fn test_unauthorized_confirm_delivery() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let buyer = Address::generate(&env);
@@ -1925,7 +1973,7 @@ fn test_double_confirm_delivery() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let buyer = Address::generate(&env);
@@ -1971,7 +2019,7 @@ fn test_double_confirm_delivery() {
 fn test_zero_amount_milestone_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -2008,7 +2056,7 @@ fn test_zero_amount_milestone_rejected() {
 fn test_legacy_escrow_migrates_to_v2_and_preserves_metadata() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -2057,7 +2105,7 @@ fn test_legacy_escrow_migrates_to_v2_and_preserves_metadata() {
 fn test_milestone_sum_overflow_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -2099,7 +2147,7 @@ fn test_milestone_sum_overflow_rejected() {
 fn test_negative_amount_milestone_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -2136,7 +2184,7 @@ fn test_negative_amount_milestone_rejected() {
 fn test_self_dealing_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let same_party = Address::generate(&env);
@@ -2172,7 +2220,7 @@ fn test_self_dealing_rejected() {
 fn test_valid_escrow_creation_succeeds() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -2222,7 +2270,7 @@ fn test_double_deposit_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -2265,7 +2313,7 @@ fn test_cancel_active_escrow_retains_fee() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -2323,7 +2371,7 @@ fn test_release_milestone_before_deposit() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -2362,7 +2410,7 @@ fn test_refund_expired_authorization_check() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -2430,7 +2478,7 @@ fn setup_funded_escrow_for_refund(
     token::Client<'_>,
     Address,
 ) {
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(env, &contract_id);
 
     let treasury = Address::generate(env);
@@ -2567,7 +2615,7 @@ fn test_refund_expired_allowed_when_paused() {
 fn test_pause_fails_without_operator_initialized() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     // set_paused requires operator. Operator not set -> OperatorNotInitialized (28)
@@ -2579,7 +2627,7 @@ fn test_pause_fails_without_operator_initialized() {
 fn test_resolve_dispute_fails_without_arbitrator_initialized() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -2627,7 +2675,7 @@ fn test_resolve_dispute_fails_without_arbitrator_initialized() {
 //     let env = Env::default();
 //     env.mock_all_auths();
 
-//     let contract_id = env.register_contract(None, VaultixEscrow);
+//     let contract_id = env.register(VaultixEscrow, ());
 //     let client = VaultixEscrowClient::new(&env, &contract_id);
 
 //     let treasury = Address::generate(&env);
@@ -2646,7 +2694,7 @@ fn test_set_token_fee_valid() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -2670,7 +2718,7 @@ fn test_set_token_fee_invalid_fee_too_high() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -2689,7 +2737,7 @@ fn test_set_token_fee_invalid_fee_too_high() {
 //     let env = Env::default();
 //     env.mock_all_auths();
 
-//     let contract_id = env.register_contract(None, VaultixEscrow);
+//     let contract_id = env.register(VaultixEscrow, ());
 //     let client = VaultixEscrowClient::new(&env, &contract_id);
 
 //     let treasury = Address::generate(&env);
@@ -2707,7 +2755,7 @@ fn test_set_escrow_fee_valid() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -2731,7 +2779,7 @@ fn test_set_escrow_fee_invalid_fee_too_high() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -2749,7 +2797,7 @@ fn test_release_milestone_uses_global_fee_by_default() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -2802,7 +2850,7 @@ fn test_release_milestone_uses_token_fee_override() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -2859,7 +2907,7 @@ fn test_release_milestone_uses_escrow_fee_override() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -2920,7 +2968,7 @@ fn test_cancel_escrow_uses_token_fee_override() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -2977,7 +3025,7 @@ fn test_refund_expired_uses_escrow_fee_override() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -3044,7 +3092,7 @@ fn test_zero_fee_valid() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -3096,7 +3144,7 @@ fn test_configure_multisig_threshold() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -3142,7 +3190,7 @@ fn test_collect_signature() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -3200,7 +3248,7 @@ fn test_release_milestone_below_threshold_single_signature() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -3254,7 +3302,7 @@ fn test_release_milestone_above_threshold_insufficient_signatures() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -3301,7 +3349,7 @@ fn test_release_milestone_above_threshold_sufficient_signatures() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -3360,7 +3408,7 @@ fn test_list_escrows_by_depositor() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -3417,7 +3465,7 @@ fn test_list_escrows_by_recipient() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -3474,7 +3522,7 @@ fn test_list_escrows_pagination() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -3535,7 +3583,7 @@ fn test_list_escrows_page_size_limit() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -3565,7 +3613,7 @@ fn test_list_escrows_invalid_role() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -3585,7 +3633,7 @@ fn test_list_escrows_empty_party() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -3605,7 +3653,7 @@ fn test_list_escrows_returns_lightweight_summaries() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -3658,7 +3706,7 @@ fn test_max_fee_10000_bps_valid() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -3692,7 +3740,7 @@ fn test_lifecycle_events_contain_all_summary_fields() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let treasury = Address::generate(&env);
@@ -3726,7 +3774,7 @@ fn test_lifecycle_events_contain_all_summary_fields() {
         &valid_metadata_hash(&env),
     );
 
-    let events = env.events().all();
+    let events = all_events(&env);
     // Event index 0 is FeeUpdated from initialize, index 1 is RoleUpdated
     // So EscrowCreated should be the last event
     let event = events.last().unwrap();
@@ -3746,7 +3794,7 @@ fn test_full_lifecycle_event_summaries_are_accurate() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -3787,7 +3835,7 @@ fn test_full_lifecycle_event_summaries_are_accurate() {
         &valid_metadata_hash(&env),
     );
 
-    let events = env.events().all();
+    let events = all_events(&env);
     // Find the last event (EscrowCreated) — skip initialization events
     let create_event: EscrowCreatedEvent = events.last().unwrap().2.clone().into_val(&env);
     assert_eq!(create_event.status, EscrowStatus::Created);
@@ -3799,7 +3847,7 @@ fn test_full_lifecycle_event_summaries_are_accurate() {
     token_client.approve(&depositor, &contract_id, &10_000, &200);
     client.deposit_funds(&escrow_id);
 
-    let events = env.events().all();
+    let events = all_events(&env);
     let deposit_event: FundsDepositedEvent = events.last().unwrap().2.clone().into_val(&env);
     assert_eq!(deposit_event.status, EscrowStatus::Active);
     assert_eq!(deposit_event.total_amount, 10000);
@@ -3809,7 +3857,7 @@ fn test_full_lifecycle_event_summaries_are_accurate() {
     // --- Step 3: Release milestone 0 ---
     client.release_milestone(&escrow_id, &0);
 
-    let events = env.events().all();
+    let events = all_events(&env);
     let release_event: MilestoneReleasedEvent = events.last().unwrap().2.clone().into_val(&env);
     assert_eq!(release_event.status, EscrowStatus::Active);
     assert_eq!(release_event.total_amount, 10000);
@@ -3819,7 +3867,7 @@ fn test_full_lifecycle_event_summaries_are_accurate() {
     // --- Step 4: Delivery confirm milestone 1 ---
     client.confirm_delivery(&escrow_id, &1, &depositor);
 
-    let events = env.events().all();
+    let events = all_events(&env);
     let confirm_event: DeliveryConfirmedEvent = events.last().unwrap().2.clone().into_val(&env);
     assert_eq!(confirm_event.status, EscrowStatus::Active);
     assert_eq!(confirm_event.total_amount, 10000);
@@ -3829,7 +3877,7 @@ fn test_full_lifecycle_event_summaries_are_accurate() {
     // --- Step 5: Complete escrow ---
     client.complete_escrow(&escrow_id);
 
-    let events = env.events().all();
+    let events = all_events(&env);
     let complete_event: EscrowCompletedEvent = events.last().unwrap().2.clone().into_val(&env);
     assert_eq!(complete_event.status, EscrowStatus::Completed);
     assert_eq!(complete_event.total_amount, 10000);
@@ -3845,7 +3893,7 @@ fn test_event_ordering_is_deterministic() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -3878,7 +3926,7 @@ fn test_event_ordering_is_deterministic() {
         &valid_metadata_hash(&env),
     );
 
-    let events = env.events().all();
+    let events = all_events(&env);
 
     // The last event should be EscrowCreated (initialize emits FeeUpdated first)
     let event = events.last().unwrap();
@@ -3902,7 +3950,7 @@ fn test_event_topics_are_backwards_compatible() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, VaultixEscrow);
+    let contract_id = env.register(VaultixEscrow, ());
     let client = VaultixEscrowClient::new(&env, &contract_id);
 
     let depositor = Address::generate(&env);
@@ -3925,7 +3973,11 @@ fn test_event_topics_are_backwards_compatible() {
         },
     ];
 
-    // Run through a series of operations and verify all event topics
+    // Run through a series of operations and verify all event topics.
+    //
+    // Since soroban-sdk 21, `env.events().all()` only reports the events of the
+    // most recent top-level invocation, so each operation is checked right
+    // after its own call instead of walking one accumulated log.
     let deadline = 1706400000u64;
 
     client.create_escrow(
@@ -3937,74 +3989,69 @@ fn test_event_topics_are_backwards_compatible() {
         &deadline,
         &valid_metadata_hash(&env),
     );
+    assert_canonical_event_topics(&env, &all_events(&env), &contract_id, "EscrowCreated");
 
     token_client.approve(&depositor, &contract_id, &10_000, &200);
     client.deposit_funds(&escrow_id);
+    assert_canonical_event_topics(&env, &all_events(&env), &contract_id, "FundsDeposited");
 
     client.release_milestone(&escrow_id, &0);
+    assert_canonical_event_topics(&env, &all_events(&env), &contract_id, "MilestoneReleased");
 
     client.complete_escrow(&escrow_id);
+    assert_canonical_event_topics(&env, &all_events(&env), &contract_id, "EscrowCompleted");
+}
 
-    let events = env.events().all();
+/// Asserts that every event emitted by `contract_id` in `events` uses the
+/// canonical `(Vaultix, v1, EventName)` three-topic format, and that at least
+/// one of them is named `expected_name`.
+fn assert_canonical_event_topics(
+    env: &Env,
+    events: &soroban_sdk::Vec<(Address, soroban_sdk::Vec<Val>, Val)>,
+    contract_id: &Address,
+    expected_name: &str,
+) {
+    use soroban_sdk::TryFromVal;
 
-    let expected_event_names = [
-        "EscrowCreated",
-        "FundsDeposited",
-        "MilestoneReleased",
-        "EscrowCompleted",
-    ];
+    let namespace = Symbol::new(env, "Vaultix");
+    let version = Symbol::new(env, "v1");
+    let expected_topics: soroban_sdk::Vec<Val> = (
+        namespace.clone(),
+        version.clone(),
+        Symbol::new(env, expected_name),
+    )
+        .into_val(env);
 
-    let mut event_idx = 0;
-    // Skip initialization events (FeeUpdated + RoleUpdated) emitted by initialize()
-    // In this setup with treasury only, initialize emits FeeUpdated (topic index 2 with "FeeUpdated")
-    while event_idx < events.len() {
-        let topics: soroban_sdk::Vec<Val> = events.get(event_idx).unwrap().1.clone().into_val(&env);
-        let _name_val: Val = topics.get(2).unwrap();
-        let expected_topics: soroban_sdk::Vec<Val> = (
-            Symbol::new(&env, "Vaultix"),
-            Symbol::new(&env, "v1"),
-            Symbol::new(&env, expected_event_names[0]),
-        )
-            .into_val(&env);
-        if topics != expected_topics && event_idx < 5 {
-            // Skip the initial FeeUpdated event
-            event_idx += 1;
+    let mut found = false;
+    for (emitter, topics, _) in events.iter() {
+        if &emitter != contract_id {
+            // Sub-invocations (e.g. the token contract) emit their own events.
             continue;
         }
-        break;
-    }
-
-    for expected_name in expected_event_names.iter() {
-        while event_idx < events.len() {
-            let topics: soroban_sdk::Vec<Val> =
-                events.get(event_idx).unwrap().1.clone().into_val(&env);
-            let expected_topics: soroban_sdk::Vec<Val> = (
-                Symbol::new(&env, "Vaultix"),
-                Symbol::new(&env, "v1"),
-                Symbol::new(&env, expected_name),
-            )
-                .into_val(&env);
-            if topics == expected_topics {
-                break;
-            }
-            event_idx += 1;
-        }
-
-        assert!(event_idx < events.len(), "expected more events");
-
-        let topics: soroban_sdk::Vec<Val> = events.get(event_idx).unwrap().1.clone().into_val(&env);
-        let canon_topic: soroban_sdk::Vec<Val> = (
-            Symbol::new(&env, "Vaultix"),
-            Symbol::new(&env, "v1"),
-            Symbol::new(&env, expected_name),
-        )
-            .into_val(&env);
         assert_eq!(
-            topics, canon_topic,
-            "Event {} must use canonical topic format (Vaultix, v1, {})",
-            expected_name, expected_name
+            topics.len(),
+            3,
+            "Vaultix events must have exactly 3 topics, got {:?}",
+            topics
         );
-
-        event_idx += 1;
+        assert_eq!(
+            Symbol::try_from_val(env, &topics.get(0).unwrap()).unwrap(),
+            namespace,
+            "first topic must be the Vaultix namespace"
+        );
+        assert_eq!(
+            Symbol::try_from_val(env, &topics.get(1).unwrap()).unwrap(),
+            version,
+            "second topic must be the v1 schema version"
+        );
+        if topics == expected_topics {
+            found = true;
+        }
     }
+
+    assert!(
+        found,
+        "Event {} must be emitted with canonical topic format (Vaultix, v1, {})",
+        expected_name, expected_name
+    );
 }

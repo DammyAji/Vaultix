@@ -200,7 +200,7 @@ pnpm dev
 
 # Terminal 3 - Watch onchain contracts (optional)
 cd apps/onchain
-cargo build --target wasm32-unknown-unknown --release
+cargo build --target wasm32v1-none --release
 ```
 
 ### Testing Your Setup
@@ -253,12 +253,12 @@ pnpm install
 ```bash
 # Update Rust toolchain
 rustup update
-rustup target add wasm32-unknown-unknown
+rustup target add wasm32v1-none
 
 # Rebuild contract
 cd apps/onchain
 cargo clean
-cargo build --target wasm32-unknown-unknown --release
+cargo build --target wasm32v1-none --release
 ```
 
 ### Environment Setup
