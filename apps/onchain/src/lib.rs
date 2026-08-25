@@ -21,7 +21,8 @@ impl VaultixEscrow {
         let hash_bytes = soroban_sdk::BytesN::<32>::from_array(&env, &new_wasm_hash);
 
         // Emit ContractUpgraded event
-        env.events().publish(
+        publish_event(
+            &env,
             (
                 Symbol::new(&env, "Vaultix"),
                 Symbol::new(&env, "ContractUpgraded"),
@@ -441,7 +442,8 @@ impl VaultixEscrow {
 
         emit_role_updated(&env, Role::Treasury, None, treasury.clone(), timestamp);
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "FeeUpdated"),
             FeeUpdatedEvent {
                 scope: FeeScope::Global,
@@ -476,7 +478,8 @@ impl VaultixEscrow {
             .instance()
             .set(&symbol_short!("fee_bps"), &new_fee_bps);
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "FeeUpdated"),
             FeeUpdatedEvent {
                 scope: FeeScope::Global,
@@ -523,7 +526,8 @@ impl VaultixEscrow {
             .persistent()
             .extend_ttl(&token_fee_key, 100, 2_000_000);
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "FeeUpdated"),
             FeeUpdatedEvent {
                 scope: FeeScope::Token,
@@ -567,7 +571,8 @@ impl VaultixEscrow {
             escrow.fee_override_bps = fee_bps;
             store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-            env.events().publish(
+            publish_event(
+                &env,
                 event_topic(&env, "FeeUpdated"),
                 FeeUpdatedEvent {
                     scope: FeeScope::Escrow,
@@ -592,7 +597,8 @@ impl VaultixEscrow {
             .persistent()
             .extend_ttl(&escrow_fee_key, 100, 500_000);
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "FeeUpdated"),
             FeeUpdatedEvent {
                 scope: FeeScope::Escrow,
@@ -636,7 +642,8 @@ impl VaultixEscrow {
             .instance()
             .set(&symbol_short!("state"), &state);
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "PausedToggled"),
             PausedToggledEvent {
                 paused,
@@ -886,7 +893,8 @@ impl VaultixEscrow {
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
         // Emit event
-        env.events().publish(
+        publish_event(
+            &env,
             (
                 Symbol::new(&env, "Vaultix"),
                 Symbol::new(&env, "MultisigConfigured"),
@@ -992,7 +1000,8 @@ impl VaultixEscrow {
             .persistent()
             .set(&recipient_index_key, &recipient_escrows);
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "EscrowCreated"),
             EscrowCreatedEvent {
                 escrow_id,
@@ -1154,7 +1163,8 @@ impl VaultixEscrow {
         }
 
         if !created_items.is_empty() {
-            env.events().publish(
+            publish_event(
+                &env,
                 event_topic(&env, "EscrowCreatedBatch"),
                 EscrowCreatedBatchEvent {
                     batch_size: created_items.len(),
@@ -1201,7 +1211,8 @@ impl VaultixEscrow {
         set_escrow_status(&mut escrow, EscrowStatus::Active)?;
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "FundsDeposited"),
             FundsDepositedEvent {
                 escrow_id,
@@ -1242,7 +1253,8 @@ impl VaultixEscrow {
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
         // Emit event
-        env.events().publish(
+        publish_event(
+            &env,
             (
                 Symbol::new(&env, "Vaultix"),
                 Symbol::new(&env, "SignatureCollected"),
@@ -1374,7 +1386,8 @@ impl VaultixEscrow {
         let release = release_pending_milestone(&env, &mut escrow, milestone_index)?;
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "MilestoneReleased"),
             MilestoneReleasedEvent {
                 escrow_id,
@@ -1435,7 +1448,8 @@ impl VaultixEscrow {
         let release = release_pending_milestone(&env, &mut escrow, milestone_index)?;
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "DeliveryConfirmed"),
             DeliveryConfirmedEvent {
                 escrow_id,
@@ -1491,7 +1505,8 @@ impl VaultixEscrow {
         set_escrow_resolution(&mut escrow, Resolution::None);
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "DisputeRaised"),
             DisputeRaisedEvent {
                 escrow_id,
@@ -1649,7 +1664,8 @@ impl VaultixEscrow {
         set_escrow_status(&mut escrow, EscrowStatus::Resolved)?;
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "DisputeResolved"),
             DisputeResolvedEvent {
                 escrow_id,
@@ -1725,7 +1741,8 @@ impl VaultixEscrow {
         set_escrow_status(&mut escrow, EscrowStatus::Cancelled)?;
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "EscrowCancelled"),
             EscrowCancelledEvent {
                 escrow_id,
@@ -1761,7 +1778,8 @@ impl VaultixEscrow {
         set_escrow_status(&mut escrow, EscrowStatus::Completed)?;
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "EscrowCompleted"),
             EscrowCompletedEvent {
                 escrow_id,
@@ -1862,7 +1880,8 @@ impl VaultixEscrow {
         set_escrow_status(&mut escrow, EscrowStatus::Expired)?;
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "EscrowExpiredRefunded"),
             EscrowExpiredRefundedEvent {
                 escrow_id,
@@ -1890,6 +1909,23 @@ fn get_storage_key_legacy(escrow_id: u64) -> (Symbol, u64) {
 /// This companion key is stored alongside the V2 escrow entry for explicit versioning.
 fn get_escrow_version_key(escrow_id: u64) -> (Symbol, u64) {
     (symbol_short!("escver"), escrow_id)
+}
+
+/// Publishes a contract event using the explicit `(topics, data)` form.
+///
+/// soroban-sdk 21+ deprecates `Events::publish` in favour of the
+/// `#[contractevent]` macro, but that macro derives its own topic layout from
+/// the event type name. This contract's topics are a published interface
+/// (`(Vaultix, v1, EventName)`) that off-chain indexers already consume, so we
+/// deliberately keep the manual form. The `allow` is confined to this one
+/// wrapper so the migration, if ever wanted, is a single-site change.
+#[allow(deprecated)]
+fn publish_event<T, D>(env: &Env, topics: T, data: D)
+where
+    T: soroban_sdk::events::Topics,
+    D: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+{
+    env.events().publish(topics, data);
 }
 
 fn event_topic(env: &Env, event_name: &str) -> (Symbol, Symbol, Symbol) {
@@ -2202,7 +2238,8 @@ fn emit_role_updated(
     let had_old_address = old_address.is_some();
     let prior_address = old_address.unwrap_or(new_address.clone());
 
-    env.events().publish(
+    publish_event(
+        env,
         event_topic(env, "RoleUpdated"),
         RoleUpdatedEvent {
             role,
