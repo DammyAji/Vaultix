@@ -6,26 +6,26 @@ The `VaultixEscrow` contract is a decentralized, milestone-based escrow system b
 ## Deployment Instructions
 
 ### Environment Setup
-Ensure you have the Soroban CLI and correct Rust toolchain installed:
+Ensure you have the Stellar CLI and correct Rust toolchain installed:
 ```bash
-rustup target add wasm32-unknown-unknown
-cargo install --locked soroban-cli
+rustup target add wasm32v1-none
+cargo install --locked stellar-cli
 ```
 
 ### Build
 To build the smart contract into a `.wasm` file:
 ```bash
-cargo build --target wasm32-unknown-unknown --release
+cargo build --target wasm32v1-none --release
 ```
 Optimization (Optional but recommended):
 ```bash
-soroban contract optimize --wasm target/wasm32-unknown-unknown/release/vaultix_escrow.wasm
+stellar contract optimize --wasm target/wasm32v1-none/release/onchain.wasm
 ```
 
 ### Deploy
 Deploy the optimized `.wasm` file to the network:
 ```bash
-soroban contract deploy --wasm target/wasm32-unknown-unknown/release/vaultix_escrow.optimized.wasm --network testnet \
+stellar contract deploy --wasm target/wasm32v1-none/release/onchain.optimized.wasm --network testnet \
     --source YOUR_ACCOUNT_SECRET
 ```
 
