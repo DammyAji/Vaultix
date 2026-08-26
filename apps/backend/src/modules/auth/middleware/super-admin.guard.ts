@@ -13,7 +13,7 @@ interface AuthenticatedUser {
 }
 
 @Injectable()
-export class AdminGuard implements CanActivate {
+export class SuperAdminGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const request = context
       .switchToHttp()
@@ -24,9 +24,9 @@ export class AdminGuard implements CanActivate {
       throw new ForbiddenException('Authentication required');
     }
 
-    if (user.role !== UserRole.ADMIN && user.role !== UserRole.SUPER_ADMIN) {
+    if (user.role !== UserRole.SUPER_ADMIN) {
       throw new ForbiddenException(
-        'Admin access required. Your current role does not grant permission to this resource.',
+        'Super-admin access required. Your current role does not grant permission to this resource.',
       );
     }
 
