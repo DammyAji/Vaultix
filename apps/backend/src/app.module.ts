@@ -44,6 +44,7 @@ import stellarConfig from './config/stellar.config';
 import ipfsConfig from './config/ipfs.config';
 import emailConfig from './config/email.config';
 import webhookConfig from './config/webhook.config';
+import { ApiV2Module } from './modules/versioning/api-v2.module';
 
 @Module({
   imports: [
@@ -123,6 +124,7 @@ import webhookConfig from './config/webhook.config';
     HealthModule,
     AppVersionModule,
     EmailModule,
+    ApiV2Module,
     JwtModule.registerAsync({
       useFactory: (configService: ConfigService) => ({
         secret: validateJwtSecret(configService.get<string>('JWT_SECRET')),

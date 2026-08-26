@@ -1002,7 +1002,6 @@ export class EscrowService {
       disputeId: savedDispute.id,
     });
 
-
     // Notify the other escrow participants (fire-and-forget)
     await this.notifyDisputeParticipants(
       escrow,
@@ -1021,7 +1020,6 @@ export class EscrowService {
       escrowId,
       disputeId: savedDispute.id,
     });
-
 
     return this.disputeRepository.findOne({
       where: { id: savedDispute.id },
