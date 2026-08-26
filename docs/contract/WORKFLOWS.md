@@ -71,7 +71,7 @@ sequenceDiagram
 
 ## 4. Dispute Resolution
 
-If a disagreement arises, either party can raise a dispute, locking the escrow until the Arbitrator steps in.
+If a disagreement arises, either party can raise a dispute, locking the escrow until the Arbitrator steps in. Raising a dispute requires an `evidence_hash` anchoring the off-chain evidence; the Arbitrator may optionally anchor its own `resolution_evidence_hash` with the ruling. See "Dispute Evidence Hash Interop" in `README.md` for the digest convention.
 
 ```mermaid
 sequenceDiagram
@@ -80,10 +80,10 @@ sequenceDiagram
     participant A as Arbitrator
     participant T as Tokens
 
-    U->>C: raise_dispute(id)
+    U->>C: raise_dispute(id, evidence_hash)
     Note over C: Status: Disputed
     
-    A->>C: resolve_dispute(id, winner, split)
+    A->>C: resolve_dispute(id, winner, split, resolution_evidence_hash?)
     C->>T: transfer(winner_amount to Winner)
     C->>T: transfer(other_amount to Other)
     Note over C: Status: Resolved

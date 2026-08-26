@@ -108,3 +108,5 @@ Holds longer-term state, retaining data specifically for individual escrows and 
 - `("escver", id: u64)`: (`u8`) Explicit V2 escrow version marker companion value.
 - `("tokfee", token: Address)`: (`i128`) A token-specific fee BPS override.
 - `("escfee", escrow_id: u64)`: (`i128`) An escrow-specific fee BPS override.
+- `("dispev", escrow_id: u64)`: (`BytesN<32>`) Evidence digest recorded by `raise_dispute`, written only for disputed escrows and given the same TTL as the escrow entry.
+- `("disprev", escrow_id: u64)`: (`BytesN<32>`) Optional resolution evidence digest recorded by the arbitrator in `resolve_dispute`.

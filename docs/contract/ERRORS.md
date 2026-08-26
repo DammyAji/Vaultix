@@ -33,4 +33,6 @@ Below is a complete reference of the `Error` enum variants returned by the `Vaul
 | `Unauthorized` | 27 | Similar to (5), unauthorized function caller specifically for expiration refund. | Check who you are logging in with. |
 | `OperatorNotInitialized` | 28 | `operator` address missing in persistent storage. | Contact Admin to supply this config. |
 | `ArbitratorNotInitialized` | 29 | `arbitrator` address missing in persistent storage. | Contact Admin to supply this config. |
-| `InvalidMetadataHash` | 30 | `metadata_hash` was the all-zero 32-byte value or otherwise failed metadata validation. | Pass a real 32-byte SHA-256 digest derived from the metadata CID or payload. |
+| `InvalidMetadataHash` | 30 | A 32-byte content digest (`metadata_hash`, dispute `evidence_hash`, or `resolution_evidence_hash`) was the all-zero value or otherwise failed validation. | Pass a real 32-byte SHA-256 digest derived from the CID or payload. |
+| `UnsupportedEscrowVersion` | 31 | The stored escrow entry carries a storage version newer than this contract build understands. | Upgrade the contract before reading or mutating that escrow. |
+| `DisputeEvidenceNotFound` | 32 | `get_dispute_evidence()` was called for an escrow that has no dispute evidence recorded (no dispute was ever raised). | Check `get_state()` first; only disputed escrows carry evidence. |

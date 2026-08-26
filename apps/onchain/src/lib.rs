@@ -21,7 +21,8 @@ impl VaultixEscrow {
         let hash_bytes = soroban_sdk::BytesN::<32>::from_array(&env, &new_wasm_hash);
 
         // Emit ContractUpgraded event
-        env.events().publish(
+        publish_event(
+            &env,
             (
                 Symbol::new(&env, "Vaultix"),
                 Symbol::new(&env, "ContractUpgraded"),
@@ -294,6 +295,8 @@ pub struct DisputeRaisedEvent {
     pub raised_by: Address,
     pub depositor: Address,
     pub recipient: Address,
+    /// Raw sha2-256 digest of the off-chain evidence bundle backing this dispute.
+    pub evidence_hash: BytesN<32>,
     pub status: EscrowStatus,
     pub total_amount: i128,
     pub total_released: i128,
@@ -310,6 +313,9 @@ pub struct DisputeResolvedEvent {
     pub winner_amount: i128,
     pub other_amount: i128,
     pub resolution: Resolution,
+    /// Raw sha2-256 digest of the arbitrator's resolution evidence, or `None`
+    /// when the arbitrator ruled without publishing a supporting document.
+    pub resolution_evidence_hash: Option<BytesN<32>>,
     pub status: EscrowStatus,
     pub total_amount: i128,
     pub total_released: i128,
@@ -394,6 +400,7 @@ pub enum Error {
     ArbitratorNotInitialized = 29,
     InvalidMetadataHash = 30,
     UnsupportedEscrowVersion = 31,
+    DisputeEvidenceNotFound = 32,
 }
 
 const DEFAULT_FEE_BPS: i128 = 50;
@@ -403,6 +410,14 @@ const ESCROW_ENTRY_STORAGE_VERSION: i128 = 2;
 const EVENT_NAMESPACE: &str = "Vaultix";
 const EVENT_SCHEMA_VERSION: &str = "v1";
 const MAX_PAGE_SIZE: u32 = 100;
+/// Number of escrow ids stored per party-index chunk.
+///
+/// Matching `MAX_PAGE_SIZE` guarantees any requested page spans at most two
+/// chunks, so `list_escrows_by_party` never loads more than two bounded entries.
+const PARTY_INDEX_CHUNK_SIZE: u32 = 100;
+/// TTL bump threshold / target applied to party-index entries that are touched.
+const PARTY_INDEX_TTL_THRESHOLD: u32 = 100;
+const PARTY_INDEX_TTL_EXTEND_TO: u32 = 1_000_000;
 
 #[derive(Clone, Debug)]
 struct ReleaseOutcome {
@@ -441,7 +456,8 @@ impl VaultixEscrow {
 
         emit_role_updated(&env, Role::Treasury, None, treasury.clone(), timestamp);
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "FeeUpdated"),
             FeeUpdatedEvent {
                 scope: FeeScope::Global,
@@ -476,7 +492,8 @@ impl VaultixEscrow {
             .instance()
             .set(&symbol_short!("fee_bps"), &new_fee_bps);
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "FeeUpdated"),
             FeeUpdatedEvent {
                 scope: FeeScope::Global,
@@ -523,7 +540,8 @@ impl VaultixEscrow {
             .persistent()
             .extend_ttl(&token_fee_key, 100, 2_000_000);
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "FeeUpdated"),
             FeeUpdatedEvent {
                 scope: FeeScope::Token,
@@ -567,7 +585,8 @@ impl VaultixEscrow {
             escrow.fee_override_bps = fee_bps;
             store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-            env.events().publish(
+            publish_event(
+                &env,
                 event_topic(&env, "FeeUpdated"),
                 FeeUpdatedEvent {
                     scope: FeeScope::Escrow,
@@ -592,7 +611,8 @@ impl VaultixEscrow {
             .persistent()
             .extend_ttl(&escrow_fee_key, 100, 500_000);
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "FeeUpdated"),
             FeeUpdatedEvent {
                 scope: FeeScope::Escrow,
@@ -636,7 +656,8 @@ impl VaultixEscrow {
             .instance()
             .set(&symbol_short!("state"), &state);
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "PausedToggled"),
             PausedToggledEvent {
                 paused,
@@ -792,6 +813,46 @@ impl VaultixEscrow {
         Ok(())
     }
 
+    /// Test-only helper: write a legacy (pre-chunking) single-vector party index
+    /// under the old `depidx`/`recidx` key so migration can be exercised.
+    #[cfg(test)]
+    pub fn test_set_legacy_party_index(env: Env, party: Address, role: Symbol, ids: Vec<u64>) {
+        let key = if role == symbol_short!("depositor") {
+            get_depositor_index_key(&party)
+        } else {
+            get_recipient_index_key(&party)
+        };
+        env.storage().persistent().set(&key, &ids);
+    }
+
+    /// Test-only helper: does the legacy party index key still exist?
+    #[cfg(test)]
+    pub fn test_has_legacy_party_index(env: Env, party: Address, role: Symbol) -> bool {
+        let key = if role == symbol_short!("depositor") {
+            get_depositor_index_key(&party)
+        } else {
+            get_recipient_index_key(&party)
+        };
+        env.storage().persistent().has(&key)
+    }
+
+    /// Test-only helper: number of ids stored in a single party-index chunk.
+    #[cfg(test)]
+    pub fn test_party_index_chunk_len(env: Env, party: Address, role: Symbol, chunk: u32) -> u32 {
+        let index_role = if role == symbol_short!("depositor") {
+            PartyIndexRole::Depositor
+        } else {
+            PartyIndexRole::Recipient
+        };
+        env.storage()
+            .persistent()
+            .get::<(Symbol, Address, u32), Vec<u64>>(&party_index_chunk_key(
+                index_role, &party, chunk,
+            ))
+            .map(|c| c.len())
+            .unwrap_or(0)
+    }
+
     #[cfg(test)]
     pub fn test_has_escrow_v2(env: Env, escrow_id: u64) -> bool {
         env.storage()
@@ -886,7 +947,8 @@ impl VaultixEscrow {
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
         // Emit event
-        env.events().publish(
+        publish_event(
+            &env,
             (
                 Symbol::new(&env, "Vaultix"),
                 Symbol::new(&env, "MultisigConfigured"),
@@ -916,7 +978,7 @@ impl VaultixEscrow {
             return Err(Error::SelfDealing);
         }
 
-        validate_metadata_hash(&metadata_hash)?;
+        validate_hash(&metadata_hash)?;
 
         if env
             .storage()
@@ -968,31 +1030,12 @@ impl VaultixEscrow {
 
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-        // Add to depositor index
-        let depositor_index_key = get_depositor_index_key(&depositor);
-        let mut depositor_escrows: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&depositor_index_key)
-            .unwrap_or_else(|| Vec::new(&env));
-        depositor_escrows.push_back(escrow_id);
-        env.storage()
-            .persistent()
-            .set(&depositor_index_key, &depositor_escrows);
+        // Add to depositor / recipient indexes (O(1): touches one chunk each)
+        party_index_append(&env, PartyIndexRole::Depositor, &depositor, escrow_id);
+        party_index_append(&env, PartyIndexRole::Recipient, &recipient, escrow_id);
 
-        // Add to recipient index
-        let recipient_index_key = get_recipient_index_key(&recipient);
-        let mut recipient_escrows: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&recipient_index_key)
-            .unwrap_or_else(|| Vec::new(&env));
-        recipient_escrows.push_back(escrow_id);
-        env.storage()
-            .persistent()
-            .set(&recipient_index_key, &recipient_escrows);
-
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "EscrowCreated"),
             EscrowCreatedEvent {
                 escrow_id,
@@ -1036,7 +1079,7 @@ impl VaultixEscrow {
                 return Err(Error::SelfDealing);
             }
 
-            validate_metadata_hash(&metadata_hash)?;
+            validate_hash(&metadata_hash)?;
 
             for existing_id in escrow_ids.iter() {
                 if existing_id == escrow_id {
@@ -1128,33 +1171,24 @@ impl VaultixEscrow {
 
             store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-            // Add to depositor index
-            let depositor_index_key = get_depositor_index_key(&escrow.depositor);
-            let mut depositor_escrows: Vec<u64> = env
-                .storage()
-                .persistent()
-                .get(&depositor_index_key)
-                .unwrap_or_else(|| Vec::new(&env));
-            depositor_escrows.push_back(escrow_id);
-            env.storage()
-                .persistent()
-                .set(&depositor_index_key, &depositor_escrows);
-
-            // Add to recipient index
-            let recipient_index_key = get_recipient_index_key(&escrow.recipient);
-            let mut recipient_escrows: Vec<u64> = env
-                .storage()
-                .persistent()
-                .get(&recipient_index_key)
-                .unwrap_or_else(|| Vec::new(&env));
-            recipient_escrows.push_back(escrow_id);
-            env.storage()
-                .persistent()
-                .set(&recipient_index_key, &recipient_escrows);
+            // Add to depositor / recipient indexes (O(1): touches one chunk each)
+            party_index_append(
+                &env,
+                PartyIndexRole::Depositor,
+                &escrow.depositor,
+                escrow_id,
+            );
+            party_index_append(
+                &env,
+                PartyIndexRole::Recipient,
+                &escrow.recipient,
+                escrow_id,
+            );
         }
 
         if !created_items.is_empty() {
-            env.events().publish(
+            publish_event(
+                &env,
                 event_topic(&env, "EscrowCreatedBatch"),
                 EscrowCreatedBatchEvent {
                     batch_size: created_items.len(),
@@ -1201,7 +1235,8 @@ impl VaultixEscrow {
         set_escrow_status(&mut escrow, EscrowStatus::Active)?;
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "FundsDeposited"),
             FundsDepositedEvent {
                 escrow_id,
@@ -1242,7 +1277,8 @@ impl VaultixEscrow {
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
         // Emit event
-        env.events().publish(
+        publish_event(
+            &env,
             (
                 Symbol::new(&env, "Vaultix"),
                 Symbol::new(&env, "SignatureCollected"),
@@ -1252,6 +1288,47 @@ impl VaultixEscrow {
         );
 
         Ok(())
+    }
+
+    /// Returns the evidence digest recorded when the dispute was raised.
+    ///
+    /// Errors with `EscrowNotFound` when the escrow id is unknown, and with
+    /// `DisputeEvidenceNotFound` when the escrow exists but no dispute was ever
+    /// raised against it (or it predates evidence recording).
+    pub fn get_dispute_evidence(env: Env, escrow_id: u64) -> Result<BytesN<32>, Error> {
+        let escrow = load_escrow_entry_v2(&env, escrow_id)?;
+
+        let key = get_dispute_evidence_key(escrow_id);
+        let evidence_hash = env
+            .storage()
+            .persistent()
+            .get::<(Symbol, u64), BytesN<32>>(&key)
+            .ok_or(Error::DisputeEvidenceNotFound)?;
+        extend_escrow_ttl(&env, &key, &escrow);
+
+        Ok(evidence_hash)
+    }
+
+    /// Returns the arbitrator's resolution evidence digest, if one was supplied.
+    ///
+    /// `Ok(None)` means the dispute was resolved without resolution evidence
+    /// (or is not resolved yet); `EscrowNotFound` means the id is unknown.
+    pub fn get_dispute_resolution_evidence(
+        env: Env,
+        escrow_id: u64,
+    ) -> Result<Option<BytesN<32>>, Error> {
+        let escrow = load_escrow_entry_v2(&env, escrow_id)?;
+
+        let key = get_dispute_resolution_evidence_key(escrow_id);
+        let evidence_hash = env
+            .storage()
+            .persistent()
+            .get::<(Symbol, u64), BytesN<32>>(&key);
+        if evidence_hash.is_some() {
+            extend_escrow_ttl(&env, &key, &escrow);
+        }
+
+        Ok(evidence_hash)
     }
 
     pub fn get_escrow(env: Env, escrow_id: u64) -> Result<Escrow, Error> {
@@ -1283,35 +1360,32 @@ impl VaultixEscrow {
         }
 
         // Get the appropriate index based on role
-        let index_key = if role == symbol_short!("depositor") {
-            get_depositor_index_key(&party)
+        let index_role = if role == symbol_short!("depositor") {
+            PartyIndexRole::Depositor
         } else if role == symbol_short!("recipient") {
-            get_recipient_index_key(&party)
+            PartyIndexRole::Recipient
         } else {
             return Err(Error::Unauthorized);
         };
 
-        // Get the list of escrow IDs for this party
-        let escrow_ids: Vec<u64> = env
-            .storage()
-            .persistent()
-            .get(&index_key)
-            .unwrap_or_else(|| Vec::new(&env));
+        // Total indexed ids for this party (O(1); migrates legacy index if needed)
+        let total = party_index_total(&env, index_role, &party);
 
         // Calculate pagination bounds
-        let total = escrow_ids.len();
-        let start_idx = page * page_size;
-        let end_idx = core::cmp::min(start_idx + page_size, total);
+        let start_idx = page.saturating_mul(page_size);
+        let end_idx = core::cmp::min(start_idx.saturating_add(page_size), total);
 
         if start_idx >= total {
             // Page is out of bounds, return empty result
             return Ok(Vec::new(&env));
         }
 
+        // Load only the chunk(s) the requested range spans
+        let escrow_ids = party_index_page_ids(&env, index_role, &party, start_idx, end_idx);
+
         // Collect escrow summaries for the page
         let mut summaries = Vec::new(&env);
-        for i in start_idx..end_idx {
-            let escrow_id = escrow_ids.get(i).unwrap();
+        for escrow_id in escrow_ids.iter() {
             if let Ok(escrow) = load_escrow_entry_v2(&env, escrow_id) {
                 let summary = EscrowSummary {
                     escrow_id,
@@ -1374,7 +1448,8 @@ impl VaultixEscrow {
         let release = release_pending_milestone(&env, &mut escrow, milestone_index)?;
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "MilestoneReleased"),
             MilestoneReleasedEvent {
                 escrow_id,
@@ -1435,7 +1510,8 @@ impl VaultixEscrow {
         let release = release_pending_milestone(&env, &mut escrow, milestone_index)?;
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "DeliveryConfirmed"),
             DeliveryConfirmedEvent {
                 escrow_id,
@@ -1458,8 +1534,22 @@ impl VaultixEscrow {
         Ok(())
     }
 
-    pub fn raise_dispute(env: Env, escrow_id: u64, caller: Address) -> Result<(), Error> {
+    /// Move an escrow into dispute and anchor the off-chain evidence on chain.
+    ///
+    /// `evidence_hash` is the raw 32-byte `sha2-256` digest of the evidence the
+    /// caller uploaded off-chain (see "Dispute Evidence Hash Interop" in
+    /// `docs/contract/README.md`). It is stored under its own escrow-id-keyed
+    /// entry and emitted on `DisputeRaisedEvent`, so the off-chain content is
+    /// tamper-evident: swapping or deleting it no longer matches the record.
+    pub fn raise_dispute(
+        env: Env,
+        escrow_id: u64,
+        caller: Address,
+        evidence_hash: BytesN<32>,
+    ) -> Result<(), Error> {
         ensure_not_paused(&env)?;
+
+        validate_hash(&evidence_hash)?;
 
         let mut escrow = load_escrow_entry_v2(&env, escrow_id)?;
 
@@ -1490,14 +1580,17 @@ impl VaultixEscrow {
         set_escrow_status(&mut escrow, EscrowStatus::Disputed)?;
         set_escrow_resolution(&mut escrow, Resolution::None);
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
+        store_dispute_evidence(&env, escrow_id, &evidence_hash, &escrow);
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "DisputeRaised"),
             DisputeRaisedEvent {
                 escrow_id,
                 raised_by: caller,
                 depositor: escrow.depositor.clone(),
                 recipient: escrow.recipient.clone(),
+                evidence_hash,
                 status: escrow_status(&escrow),
                 total_amount: escrow.total_amount,
                 total_released: escrow.total_released,
@@ -1509,14 +1602,25 @@ impl VaultixEscrow {
         Ok(())
     }
 
+    /// Resolve a dispute, optionally anchoring the arbitrator's own evidence.
+    ///
+    /// `resolution_evidence_hash` is optional: passing `None` is a fully valid,
+    /// zero-friction path for arbitrators who publish no ruling document. When
+    /// `Some`, it follows the same digest convention as `raise_dispute`'s
+    /// `evidence_hash` and is validated with the same rules.
     pub fn resolve_dispute(
         env: Env,
         escrow_id: u64,
         winner: Address,
         split_winner_amount: Option<i128>,
+        resolution_evidence_hash: Option<BytesN<32>>,
     ) -> Result<(), Error> {
         let arbitrator = get_arbitrator_internal(&env)?;
         arbitrator.require_auth();
+
+        if let Some(hash) = resolution_evidence_hash.as_ref() {
+            validate_hash(hash)?;
+        }
 
         let mut escrow = load_escrow_entry_v2(&env, escrow_id)?;
 
@@ -1649,7 +1753,12 @@ impl VaultixEscrow {
         set_escrow_status(&mut escrow, EscrowStatus::Resolved)?;
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-        env.events().publish(
+        if let Some(hash) = resolution_evidence_hash.as_ref() {
+            store_dispute_resolution_evidence(&env, escrow_id, hash, &escrow);
+        }
+
+        publish_event(
+            &env,
             event_topic(&env, "DisputeResolved"),
             DisputeResolvedEvent {
                 escrow_id,
@@ -1658,6 +1767,7 @@ impl VaultixEscrow {
                 winner_amount: amount_to_winner,
                 other_amount: amount_to_other,
                 resolution,
+                resolution_evidence_hash,
                 status: escrow_status(&escrow),
                 total_amount: escrow.total_amount,
                 total_released: escrow.total_released,
@@ -1725,7 +1835,8 @@ impl VaultixEscrow {
         set_escrow_status(&mut escrow, EscrowStatus::Cancelled)?;
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "EscrowCancelled"),
             EscrowCancelledEvent {
                 escrow_id,
@@ -1761,7 +1872,8 @@ impl VaultixEscrow {
         set_escrow_status(&mut escrow, EscrowStatus::Completed)?;
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "EscrowCompleted"),
             EscrowCompletedEvent {
                 escrow_id,
@@ -1862,7 +1974,8 @@ impl VaultixEscrow {
         set_escrow_status(&mut escrow, EscrowStatus::Expired)?;
         store_escrow_entry_v2(&env, escrow_id, &escrow)?;
 
-        env.events().publish(
+        publish_event(
+            &env,
             event_topic(&env, "EscrowExpiredRefunded"),
             EscrowExpiredRefundedEvent {
                 escrow_id,
@@ -1890,6 +2003,23 @@ fn get_storage_key_legacy(escrow_id: u64) -> (Symbol, u64) {
 /// This companion key is stored alongside the V2 escrow entry for explicit versioning.
 fn get_escrow_version_key(escrow_id: u64) -> (Symbol, u64) {
     (symbol_short!("escver"), escrow_id)
+}
+
+/// Publishes a contract event using the explicit `(topics, data)` form.
+///
+/// soroban-sdk 21+ deprecates `Events::publish` in favour of the
+/// `#[contractevent]` macro, but that macro derives its own topic layout from
+/// the event type name. This contract's topics are a published interface
+/// (`(Vaultix, v1, EventName)`) that off-chain indexers already consume, so we
+/// deliberately keep the manual form. The `allow` is confined to this one
+/// wrapper so the migration, if ever wanted, is a single-site change.
+#[allow(deprecated)]
+fn publish_event<T, D>(env: &Env, topics: T, data: D)
+where
+    T: soroban_sdk::events::Topics,
+    D: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+{
+    env.events().publish(topics, data);
 }
 
 fn event_topic(env: &Env, event_name: &str) -> (Symbol, Symbol, Symbol) {
@@ -1922,16 +2052,205 @@ fn get_escrow_fee_key(escrow_id: u64) -> (Symbol, u64) {
     (symbol_short!("escfee"), escrow_id)
 }
 
-/// Generates storage key for depositor index
-/// Returns a tuple of (Symbol, Address) for scoped storage access
+/// Generates storage key for the dispute evidence hash recorded by `raise_dispute`
+/// Returns a tuple of (Symbol, u64) for scoped storage access
+fn get_dispute_evidence_key(escrow_id: u64) -> (Symbol, u64) {
+    (symbol_short!("dispev"), escrow_id)
+}
+
+/// Generates storage key for the arbitrator's optional resolution evidence hash
+/// Returns a tuple of (Symbol, u64) for scoped storage access
+fn get_dispute_resolution_evidence_key(escrow_id: u64) -> (Symbol, u64) {
+    (symbol_short!("disprev"), escrow_id)
+}
+
+/// Legacy (pre-chunking) storage key for the depositor index.
+/// Held a single unbounded `Vec<u64>`; only read during lazy migration.
 fn get_depositor_index_key(depositor: &Address) -> (Symbol, Address) {
     (symbol_short!("depidx"), depositor.clone())
 }
 
-/// Generates storage key for recipient index
-/// Returns a tuple of (Symbol, Address) for scoped storage access
+/// Legacy (pre-chunking) storage key for the recipient index.
+/// Held a single unbounded `Vec<u64>`; only read during lazy migration.
 fn get_recipient_index_key(recipient: &Address) -> (Symbol, Address) {
     (symbol_short!("recidx"), recipient.clone())
+}
+
+/// Which per-party index a chunked-index operation targets.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PartyIndexRole {
+    Depositor,
+    Recipient,
+}
+
+/// Storage key holding the total number of ids appended for a (party, role).
+/// Shape: `(Symbol, Address) -> u32`.
+fn party_index_count_key(role: PartyIndexRole, party: &Address) -> (Symbol, Address) {
+    match role {
+        PartyIndexRole::Depositor => (symbol_short!("depcnt"), party.clone()),
+        PartyIndexRole::Recipient => (symbol_short!("reccnt"), party.clone()),
+    }
+}
+
+/// Storage key for one bounded chunk of ids for a (party, role).
+/// Shape: `(Symbol, Address, u32) -> Vec<u64>` with at most
+/// `PARTY_INDEX_CHUNK_SIZE` entries per chunk.
+fn party_index_chunk_key(
+    role: PartyIndexRole,
+    party: &Address,
+    chunk_index: u32,
+) -> (Symbol, Address, u32) {
+    match role {
+        PartyIndexRole::Depositor => (symbol_short!("depchk"), party.clone(), chunk_index),
+        PartyIndexRole::Recipient => (symbol_short!("recchk"), party.clone(), chunk_index),
+    }
+}
+
+/// Legacy single-vector key for a (party, role), used only for lazy migration.
+fn party_index_legacy_key(role: PartyIndexRole, party: &Address) -> (Symbol, Address) {
+    match role {
+        PartyIndexRole::Depositor => get_depositor_index_key(party),
+        PartyIndexRole::Recipient => get_recipient_index_key(party),
+    }
+}
+
+fn extend_party_index_count_ttl(env: &Env, key: &(Symbol, Address)) {
+    env.storage().persistent().extend_ttl(
+        key,
+        PARTY_INDEX_TTL_THRESHOLD,
+        PARTY_INDEX_TTL_EXTEND_TO,
+    );
+}
+
+fn extend_party_index_chunk_ttl(env: &Env, key: &(Symbol, Address, u32)) {
+    env.storage().persistent().extend_ttl(
+        key,
+        PARTY_INDEX_TTL_THRESHOLD,
+        PARTY_INDEX_TTL_EXTEND_TO,
+    );
+}
+
+/// Returns the number of ids indexed for a (party, role), migrating the legacy
+/// unbounded vector into chunks the first time the index is touched.
+///
+/// O(1) for already-migrated parties: a single scalar read of the count key.
+fn party_index_total(env: &Env, role: PartyIndexRole, party: &Address) -> u32 {
+    let count_key = party_index_count_key(role, party);
+    if let Some(count) = env
+        .storage()
+        .persistent()
+        .get::<(Symbol, Address), u32>(&count_key)
+    {
+        extend_party_index_count_ttl(env, &count_key);
+        return count;
+    }
+
+    migrate_legacy_party_index(env, role, party, &count_key)
+}
+
+/// Lazily converts a legacy `Vec<u64>` index into chunked storage.
+/// Returns the migrated count (0 when the party has no legacy entry).
+fn migrate_legacy_party_index(
+    env: &Env,
+    role: PartyIndexRole,
+    party: &Address,
+    count_key: &(Symbol, Address),
+) -> u32 {
+    let legacy_key = party_index_legacy_key(role, party);
+    let legacy_ids: Vec<u64> = match env
+        .storage()
+        .persistent()
+        .get::<(Symbol, Address), Vec<u64>>(&legacy_key)
+    {
+        Some(ids) => ids,
+        // Brand-new party: nothing to migrate, start empty without writing.
+        None => return 0,
+    };
+
+    let total = legacy_ids.len();
+    let mut chunk_index = 0u32;
+    let mut chunk: Vec<u64> = Vec::new(env);
+    for id in legacy_ids.iter() {
+        chunk.push_back(id);
+        if chunk.len() == PARTY_INDEX_CHUNK_SIZE {
+            let chunk_key = party_index_chunk_key(role, party, chunk_index);
+            env.storage().persistent().set(&chunk_key, &chunk);
+            extend_party_index_chunk_ttl(env, &chunk_key);
+            chunk_index += 1;
+            chunk = Vec::new(env);
+        }
+    }
+    if !chunk.is_empty() {
+        let chunk_key = party_index_chunk_key(role, party, chunk_index);
+        env.storage().persistent().set(&chunk_key, &chunk);
+        extend_party_index_chunk_ttl(env, &chunk_key);
+    }
+
+    env.storage().persistent().set(count_key, &total);
+    extend_party_index_count_ttl(env, count_key);
+    env.storage().persistent().remove(&legacy_key);
+
+    total
+}
+
+/// Appends an escrow id to a party index in O(1) storage work: one scalar read,
+/// one bounded chunk read/write, one scalar write. History size is irrelevant.
+fn party_index_append(env: &Env, role: PartyIndexRole, party: &Address, escrow_id: u64) {
+    let total = party_index_total(env, role, party);
+    let chunk_index = total / PARTY_INDEX_CHUNK_SIZE;
+    let chunk_key = party_index_chunk_key(role, party, chunk_index);
+
+    let mut chunk: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&chunk_key)
+        .unwrap_or_else(|| Vec::new(env));
+    chunk.push_back(escrow_id);
+    env.storage().persistent().set(&chunk_key, &chunk);
+    extend_party_index_chunk_ttl(env, &chunk_key);
+
+    let count_key = party_index_count_key(role, party);
+    let new_total = total.saturating_add(1);
+    env.storage().persistent().set(&count_key, &new_total);
+    extend_party_index_count_ttl(env, &count_key);
+}
+
+/// Reads the ids in `[start_idx, end_idx)` for a party index, loading only the
+/// chunks that range actually spans (at most two for a valid page size).
+fn party_index_page_ids(
+    env: &Env,
+    role: PartyIndexRole,
+    party: &Address,
+    start_idx: u32,
+    end_idx: u32,
+) -> Vec<u64> {
+    let mut ids: Vec<u64> = Vec::new(env);
+    if start_idx >= end_idx {
+        return ids;
+    }
+
+    let first_chunk = start_idx / PARTY_INDEX_CHUNK_SIZE;
+    let last_chunk = (end_idx - 1) / PARTY_INDEX_CHUNK_SIZE;
+
+    for chunk_index in first_chunk..=last_chunk {
+        let chunk_key = party_index_chunk_key(role, party, chunk_index);
+        let chunk: Vec<u64> = match env.storage().persistent().get(&chunk_key) {
+            Some(chunk) => chunk,
+            None => continue,
+        };
+        extend_party_index_chunk_ttl(env, &chunk_key);
+
+        let chunk_start = chunk_index * PARTY_INDEX_CHUNK_SIZE;
+        let local_start = start_idx.saturating_sub(chunk_start);
+        let local_end = core::cmp::min(end_idx - chunk_start, chunk.len());
+        let mut i = local_start;
+        while i < local_end {
+            ids.push_back(chunk.get(i).unwrap());
+            i += 1;
+        }
+    }
+
+    ids
 }
 
 fn resolve_fee_with_escrow_override(
@@ -2112,8 +2431,13 @@ fn validate_milestones(milestones: &Vec<Milestone>) -> Result<i128, Error> {
     Ok(total)
 }
 
-fn validate_metadata_hash(metadata_hash: &BytesN<32>) -> Result<(), Error> {
-    if metadata_hash.to_array() == [0u8; 32] {
+/// Shared validator for 32-byte content digests stored on chain
+/// (escrow `metadata_hash`, dispute evidence hashes).
+///
+/// The all-zero digest is rejected: it is the value a caller ends up with when
+/// no hash was actually computed, so accepting it would anchor nothing.
+fn validate_hash(hash: &BytesN<32>) -> Result<(), Error> {
+    if hash.to_array() == [0u8; 32] {
         return Err(Error::InvalidMetadataHash);
     }
 
@@ -2202,7 +2526,8 @@ fn emit_role_updated(
     let had_old_address = old_address.is_some();
     let prior_address = old_address.unwrap_or(new_address.clone());
 
-    env.events().publish(
+    publish_event(
+        env,
         event_topic(env, "RoleUpdated"),
         RoleUpdatedEvent {
             role,
@@ -2420,6 +2745,33 @@ fn escrow_entry_to_public(escrow: EscrowEntryV2) -> Escrow {
         collected_signatures: escrow.collected_signatures,
         metadata_hash: escrow.metadata_hash,
     }
+}
+
+/// Persists the dispute evidence digest as a side entry keyed by escrow id and
+/// gives it the same TTL as the escrow entry it belongs to, so a live dispute
+/// cannot outlive its own evidence record.
+fn store_dispute_evidence(
+    env: &Env,
+    escrow_id: u64,
+    evidence_hash: &BytesN<32>,
+    escrow: &EscrowEntryV2,
+) {
+    let key = get_dispute_evidence_key(escrow_id);
+    env.storage().persistent().set(&key, evidence_hash);
+    extend_escrow_ttl(env, &key, escrow);
+}
+
+/// Persists the arbitrator's optional resolution evidence digest alongside the
+/// dispute evidence, with the same escrow-derived TTL.
+fn store_dispute_resolution_evidence(
+    env: &Env,
+    escrow_id: u64,
+    evidence_hash: &BytesN<32>,
+    escrow: &EscrowEntryV2,
+) {
+    let key = get_dispute_resolution_evidence_key(escrow_id);
+    env.storage().persistent().set(&key, evidence_hash);
+    extend_escrow_ttl(env, &key, escrow);
 }
 
 fn extend_escrow_ttl(env: &Env, key: &(Symbol, u64), escrow: &EscrowEntryV2) {
