@@ -34,7 +34,7 @@ class FakeAuthGuard implements CanActivate {
       user?: unknown;
     }>();
     const role = req.headers['x-test-role'] as UserRole | undefined;
-    const userId = req.headers['x-test-user-id'] as string | undefined;
+    const userId = req.headers['x-test-user-id'];
     if (!role || !userId) return false;
     req.user = { userId, role, walletAddress: 'GTEST' };
     return true;
@@ -48,7 +48,7 @@ class TestAdminController {
   constructor(private readonly auditLogService: AdminAuditLogService) {}
 
   @Get('users')
-  async getAllUsers() {
+  getAllUsers() {
     return {
       users: [],
       pagination: { page: 1, limit: 20, total: 0, pages: 0 },
@@ -56,7 +56,7 @@ class TestAdminController {
   }
 
   @Get('users/:id/roles')
-  async getUserRoles(@Param('id') _id: string) {
+  getUserRoles(@Param('id') _id: string) {
     return { user: { id: _id, currentRole: 'USER' }, roleHistory: [] };
   }
 
