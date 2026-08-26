@@ -1,7 +1,8 @@
 /**
- * #550 — SecureStore session layer + access-mode guards.
+ * #549/#550 — SecureStore session layer + access-mode guards.
  */
 const store = new Map<string, string>();
+const asyncStore = new Map<string, string>();
 
 jest.mock('../utils/secureStore', () => ({
   saveSecureItem: jest.fn(async (key: string, value: string) => {
@@ -13,11 +14,26 @@ jest.mock('../utils/secureStore', () => ({
   }),
 }));
 
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  setItem: jest.fn(async (key: string, value: string) => {
+    asyncStore.set(key, value);
+  }),
+  getItem: jest.fn(async (key: string) => asyncStore.get(key) ?? null),
+  getAllKeys: jest.fn(async () => Array.from(asyncStore.keys())),
+  multiRemove: jest.fn(async (keys: string[]) => {
+    keys.forEach((key) => asyncStore.delete(key));
+  }),
+  removeItem: jest.fn(async (key: string) => {
+    asyncStore.delete(key);
+  }),
+}));
+
 import {
   __resetSessionForTests,
   clearSession,
   getAccessToken,
   getSession,
+  getSecureAccessToken,
   hydrateSession,
   isSessionHydrated,
   saveSession,
@@ -29,11 +45,13 @@ import {
   getAccessMode,
   isAuthenticated,
   isGuest,
+  logout,
   requireAuth,
   requireWallet,
   signOut,
   consumePendingRedirect,
 } from '../services/auth';
+import { clearAllCache } from '../services/cache/cacheKeys';
 
 const SESSION = {
   accessToken: 'jwt.access.token',
@@ -43,6 +61,7 @@ const SESSION = {
 
 beforeEach(() => {
   store.clear();
+  asyncStore.clear();
   __resetSessionForTests();
   __resetAuthForTests();
 });
@@ -108,6 +127,16 @@ describe('session store', () => {
     await clearSession();
     expect(listener).not.toHaveBeenCalled();
   });
+
+  it('getSecureAccessToken reads directly from SecureStore (#549)', async () => {
+    await saveSession(SESSION);
+    __resetSessionForTests();
+
+    // In-memory is empty after reset, but SecureStore still has the token
+    expect(getAccessToken()).toBeNull();
+    const secureToken = await getSecureAccessToken();
+    expect(secureToken).toBe(SESSION.accessToken);
+  });
 });
 
 describe('access modes', () => {
@@ -132,6 +161,24 @@ describe('access modes', () => {
 
     expect(getAccessMode()).toBe('anonymous');
     expect(store.size).toBe(0);
+  });
+
+  it('logout clears session, guest mode, and cached escrow data (#549)', async () => {
+    await saveSession(SESSION);
+    enterGuestMode();
+
+    // Simulate cached data
+    asyncStore.set('dashboard_cache', JSON.stringify({ data: 'test' }));
+    asyncStore.set('escrow_detail_123', JSON.stringify({ data: 'escrow' }));
+    asyncStore.set('other_key', 'should_remain');
+
+    await logout();
+
+    expect(getAccessMode()).toBe('anonymous');
+    expect(store.size).toBe(0);
+    expect(asyncStore.has('dashboard_cache')).toBe(false);
+    expect(asyncStore.has('escrow_detail_123')).toBe(false);
+    expect(asyncStore.has('other_key')).toBe(true);
   });
 });
 
@@ -175,5 +222,25 @@ describe('route guards', () => {
     expect(requireAuth(router, { pathname: '/(tabs)/dashboard' })).toBe(true);
     expect(requireWallet(router, { pathname: '/escrow/create' })).toBe(true);
     expect(router.replace).not.toHaveBeenCalled();
+  });
+});
+
+describe('clearAllCache (#549)', () => {
+  it('removes only cache keys, leaving other AsyncStorage data intact', async () => {
+    asyncStore.set('dashboard_cache', JSON.stringify({ data: 'test' }));
+    asyncStore.set('escrow_detail_abc', JSON.stringify({ data: 'escrow1' }));
+    asyncStore.set('escrow_detail_def', JSON.stringify({ data: 'escrow2' }));
+    asyncStore.set('user_preferences', JSON.stringify({ theme: 'dark' }));
+
+    await clearAllCache();
+
+    expect(asyncStore.has('dashboard_cache')).toBe(false);
+    expect(asyncStore.has('escrow_detail_abc')).toBe(false);
+    expect(asyncStore.has('escrow_detail_def')).toBe(false);
+    expect(asyncStore.has('user_preferences')).toBe(true);
+  });
+
+  it('handles empty cache gracefully', async () => {
+    await expect(clearAllCache()).resolves.not.toThrow();
   });
 });

@@ -8,7 +8,7 @@ import {
 } from '../types/escrow';
 import { withRetry } from '../utils/retry';
 import { Notification, NotificationsResponse } from '../types/notification';
-import { getAccessToken } from './session';
+import { getAccessToken, getSecureAccessToken } from './session';
 
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:3000';
 
@@ -25,9 +25,14 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
-// Attach the SecureStore-backed JWT to every request (#550)
-api.interceptors.request.use((config) => {
-  const token = getAccessToken();
+// Attach the SecureStore-backed JWT to every request (#549/#550)
+// Async-safe: reads the persisted token from SecureStore if the in-memory
+// session is empty (e.g. a request fires before hydration finishes).
+api.interceptors.request.use(async (config) => {
+  let token = getAccessToken();
+  if (!token) {
+    token = await getSecureAccessToken();
+  }
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
