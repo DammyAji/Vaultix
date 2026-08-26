@@ -430,6 +430,7 @@ Contributions welcome to bolster Vaultix's trust features!
   3. Commit: "feat: add milestone notifications".
   4. PR to `main`.
 - Monorepo tips: `pnpm turbo run build --filter=...`.
+- **Mobile app**: see [apps/mobile/README.md](apps/mobile/README.md) for Expo SDK 52 / React Native 0.76 prerequisites, `EXPO_PUBLIC_*` environment variables (matching `security/env.ts`), and `start`, `android`, `ios`, `lint`, `type-check`, and `test` commands.
 Follow [CONTRIBUTING.md](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
