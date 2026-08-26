@@ -38,8 +38,7 @@ export class CorrelationLogger {
   }
 
   private format(message: string, ctx?: LogContext): string {
-    const cid =
-      ctx?.correlationId ?? getCorrelationId() ?? generateId();
+    const cid = ctx?.correlationId ?? getCorrelationId() ?? generateId();
     const meta = ctx ? { ...ctx, correlationId: cid } : { correlationId: cid };
     return `[cid:${cid}] ${message} | ${JSON.stringify(meta)}`;
   }

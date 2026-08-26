@@ -103,9 +103,7 @@ async function bootstrap() {
 
   // Request logging with correlation IDs (applied before API version middleware)
   const requestLoggingMiddleware = new RequestLoggingMiddleware();
-  app.use(
-    requestLoggingMiddleware.use.bind(requestLoggingMiddleware),
-  );
+  app.use(requestLoggingMiddleware.use.bind(requestLoggingMiddleware));
 
   // API version negotiation middleware
   // Rewrites unversioned requests to /v1/... and adds Sunset headers

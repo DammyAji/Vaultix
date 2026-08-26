@@ -20,7 +20,8 @@ const SKIP_PATHS = [
   '/favicon.ico',
 ];
 
-const STATIC_FILE_EXTENSIONS = /\.(css|js|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot|map|json|xml|txt|pdf|doc|docx)$/i;
+const STATIC_FILE_EXTENSIONS =
+  /\.(css|js|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot|map|json|xml|txt|pdf|doc|docx)$/i;
 
 const MUTABLE_METHODS = new Set(['POST', 'PATCH', 'PUT']);
 
@@ -59,7 +60,7 @@ export class RequestLoggingMiddleware implements NestMiddleware {
       (req.headers['x-request-id'] as string) || crypto.randomUUID();
 
     req['correlationId'] = correlationId;
-    (req as any).id = correlationId;
+    (req as Request & { id: string }).id = correlationId;
     res.setHeader('X-Request-Id', correlationId);
 
     const startTime = Date.now();
@@ -132,7 +133,9 @@ export class RequestLoggingMiddleware implements NestMiddleware {
   }
 
   private shouldSkip(path: string): boolean {
-    if (SKIP_PATHS.some((skip) => path === skip || path.startsWith(skip + '/'))) {
+    if (
+      SKIP_PATHS.some((skip) => path === skip || path.startsWith(skip + '/'))
+    ) {
       return true;
     }
 
@@ -144,9 +147,7 @@ export class RequestLoggingMiddleware implements NestMiddleware {
   }
 
   private extractUserId(req: Request): string | undefined {
-    const user = req['user'] as
-      | { sub?: string; userId?: string }
-      | undefined;
+    const user = req['user'] as { sub?: string; userId?: string } | undefined;
 
     if (!user) {
       return undefined;
